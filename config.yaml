@@ -1,0 +1,110 @@
+# SSH RPG Server Configuration
+
+# Server Settings
+server:
+  max_players: 24
+  ssh_port: 2222
+  tcp_port: 2223
+  tick_rate: 1.0  # Game ticks per second
+  save_interval: 300  # Auto-save interval in seconds
+
+# Database Settings
+database:
+  # PostgreSQL connection (preferred)
+  postgresql:
+    host: "localhost"
+    port: 5432
+    database: "sshrpg"
+    username: "sshrpg_user"
+    password: "sshrpg_password"
+  
+  # Fallback to in-memory storage if PostgreSQL unavailable
+  fallback_to_memory: true
+
+# Game Settings
+game:
+  starting_room: 1
+  max_inventory_size: 20
+  base_health: 100
+  base_mana: 50
+  level_up_health_bonus: 10
+  level_up_mana_bonus: 5
+  
+  # Combat settings
+  combat:
+    base_damage: 10
+    critical_chance: 0.1  # 10% chance
+    critical_multiplier: 2.0
+    miss_chance: 0.05  # 5% chance to miss
+
+# Character Creation
+character_creation:
+  min_name_length: 2
+  max_name_length: 20
+  stat_roll_method: "4d6_drop_lowest"  # or "3d6", "point_buy"
+  allow_stat_reroll: true
+  max_rerolls: 3
+
+# Admin Settings
+admin:
+  default_username: "admin"
+  default_password: "admin123"
+  log_admin_actions: true
+  admin_commands_enabled: true
+
+# World Settings
+world:
+  auto_save_world: true
+  allow_room_creation: true
+  allow_item_creation: true
+  allow_monster_creation: true
+  max_rooms: 1000
+  max_items: 500
+  max_monsters: 200
+
+# SSH Settings
+ssh:
+  host_key_file: "server_key"
+  banner: |
+    ╔══════════════════════════════════════════════════════════════╗
+    ║                        SSH RPG SERVER                        ║
+    ║                  Text-Based MMORPG v1.0                     ║
+    ║                                                              ║
+    ║  Welcome to the world of adventure!                         ║
+    ║  Type 'help' for commands once logged in.                   ║
+    ║                                                              ║
+    ║  New users: register <username> <password>                  ║
+    ║  Existing users: login <username> <password>                ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_to_file: true
+  log_file: "sshrpg.log"
+  max_log_size: "10MB"
+  backup_count: 5
+
+# Debug Settings
+debug:
+  enabled: false
+  verbosity: 1  # 0=minimal, 1=normal, 2=verbose, 3=very_verbose
+  components:
+    admin_commands: true
+    database: false
+    game_engine: false
+    server: false
+    character_creation: false
+    combat: false
+  output:
+    console: true
+    file: false
+    file_path: "debug.log"
+
+# Security
+security:
+  password_min_length: 6
+  username_min_length: 3
+  max_login_attempts: 5
+  login_timeout: 300  # seconds
+  session_timeout: 3600  # seconds
