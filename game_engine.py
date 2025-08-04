@@ -155,12 +155,25 @@ class GameEngine:
     async def _execute_action(self, player: Player, action: Action):
         """Execute a specific player action"""
         try:
+            # Debug logging
+            print(f"DEBUG: Executing action {action.action_type}, target: {action.target}, target type: {type(action.target)}, parameters type: {type(action.parameters)}, value: {action.parameters}")
+            
             if action.action_type == ActionType.MOVE:
-                await self._handle_move(player, action.target)
+                if action.target:
+                    await self._handle_move(player, action.target)
+                else:
+                    await player.send_message("Move where?", "yellow")
             elif action.action_type == ActionType.ATTACK:
-                await self._handle_attack(player, action.target)
+                print(f"DEBUG: About to call _handle_attack with target: {action.target}")
+                if action.target:
+                    await self._handle_attack(player, action.target)
+                else:
+                    await player.send_message("Attack what?", "yellow")
             elif action.action_type == ActionType.USE_ITEM:
-                await self._handle_use_item(player, action.target)
+                if action.target:
+                    await self._handle_use_item(player, action.target)
+                else:
+                    await player.send_message("Use what?", "yellow")
             elif action.action_type == ActionType.LOOK:
                 await self._handle_look(player)
             elif action.action_type == ActionType.SAY:
@@ -169,6 +182,7 @@ class GameEngine:
             elif action.action_type == ActionType.REST:
                 await self._handle_rest(player)
         except Exception as e:
+            print(f"DEBUG: Error in _execute_action: {e}, action type: {action.action_type}, target: {action.target}, parameters: {action.parameters}")
             await player.send_message(f"Error executing action: {e}", "red")
     
     async def _handle_move(self, player: Player, direction: str):
@@ -270,9 +284,18 @@ class GameEngine:
         
         # Check if room is a safe zone
         room = await self.db.get_room(room_id)
-        if room and room.get('properties', {}).get('safe_zone', False):
-            await player.send_message("You cannot attack in this sacred place!", "yellow")
-            return
+        if room:
+            properties = room.get('properties', {})
+            # Handle case where properties might be a JSON string from PostgreSQL
+            if isinstance(properties, str):
+                try:
+                    properties = json.loads(properties)
+                except (json.JSONDecodeError, TypeError):
+                    properties = {}
+            
+            if properties.get('safe_zone', False):
+                await player.send_message("You cannot attack in this sacred place!", "yellow")
+                return
         
         # Find monster instance in room
         room_monsters = await self.db.get_room_monsters(room_id)
@@ -310,7 +333,9 @@ class GameEngine:
             self.combat_sessions[player.user_id].last_action_tick = self.current_tick
         
         # Perform the attack
+        print(f"DEBUG: About to call _player_attack")
         await self._player_attack(player, target_monster_instance, room_id)
+        print(f"DEBUG: _player_attack completed")
     
     async def _player_attack(self, player: Player, monster: Dict, room_id: int):
         """Handle player attacking a monster"""
@@ -453,6 +478,8 @@ class GameEngine:
         room_id = player.character['current_room']
         room = await self.db.get_room(room_id)
         
+        print(f"DEBUG: _handle_look - room_id: {room_id}, room type: {type(room)}, room value: {repr(room)}")
+        
         if not room:
             await player.send_message("You are in a void...", "red")
             return
@@ -542,7 +569,8 @@ class GameEngine:
         current_time = self.current_tick
         combat_sessions_to_remove = []
         
-        for player_id, combat in self.combat_sessions.items():
+        # Create a copy of the items to avoid "dictionary changed size during iteration" error
+        for player_id, combat in list(self.combat_sessions.items()):
             player = self.players.get(player_id)
             if not player or not player.is_online:
                 combat_sessions_to_remove.append(player_id)
@@ -710,25 +738,25 @@ class GameEngine:
             direction_map = {'n': 'north', 's': 'south', 'e': 'east', 'w': 'west', 'u': 'up', 'd': 'down'}
             direction = direction_map.get(direction, direction)
             
-            action = Action(user_id, ActionType.MOVE, direction, tick_delay=1)
+            action = Action(user_id, ActionType.MOVE, target=direction, parameters={}, tick_delay=1)
             return player.add_action(action)
         
         elif cmd in ['attack', 'kill', 'fight']:
             if args:
-                action = Action(user_id, ActionType.ATTACK, ' '.join(args), tick_delay=2)
+                action = Action(user_id, ActionType.ATTACK, target=' '.join(args), parameters={}, tick_delay=2)
                 return player.add_action(action)
             else:
                 await player.send_message("Attack what?", "yellow")
         
         elif cmd in ['use', 'drink', 'eat']:
             if args:
-                action = Action(user_id, ActionType.USE_ITEM, ' '.join(args), tick_delay=1)
+                action = Action(user_id, ActionType.USE_ITEM, target=' '.join(args), parameters={}, tick_delay=1)
                 return player.add_action(action)
             else:
                 await player.send_message("Use what?", "yellow")
         
         elif cmd in ['look', 'l']:
-            action = Action(user_id, ActionType.LOOK, tick_delay=0)
+            action = Action(user_id, ActionType.LOOK, target=None, parameters={}, tick_delay=0)
             return player.add_action(action)
         
         elif cmd in ['say', 'speak']:
@@ -744,7 +772,7 @@ class GameEngine:
                 await player.send_message("Say what?", "yellow")
         
         elif cmd in ['rest', 'sleep']:
-            action = Action(user_id, ActionType.REST, tick_delay=3)
+            action = Action(user_id, ActionType.REST, target=None, parameters={}, tick_delay=3)
             return player.add_action(action)
         
         elif cmd in ['stats', 'status']:
