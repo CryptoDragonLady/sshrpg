@@ -414,4 +414,18 @@ For issues and questions:
 
 ---
 
+## TODO
+ - Make combat more robust
+ - fix status line placement 
+ - deal with loot better
+ - add more monsters
+ - add more items
+ - add more rooms
+ - add npcs
+ - add quests
+ - add shops 
+ - deal with money better
+ - lots, lots more. 
+
+
 **Happy adventuring in the SSH RPG world!** 🗡️⚔️🛡️
