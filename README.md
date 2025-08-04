@@ -106,36 +106,36 @@ RPG Style: {name} the {race} {class} | Health: {health}/{max_health} | Location:
 
 ```
 sshrpg/
-├── 📁 Core Game Files
-│   ├── server.py              # Main game server
-│   ├── ssh_server.py          # SSH server implementation
-│   ├── run_server.py          # Server launcher
-│   ├── game_engine.py         # Core game logic
-│   ├── admin_system.py        # Admin commands and tools
-│   ├── character_creation.py  # Character creation system
-│   ├── database.py            # Database operations
-│   ├── input_sanitizer.py     # Security and input validation
-│   ├── debug_logger.py        # Debug logging system
-│   └── client.py              # Game client
-├── 📁 tools/                  # Utility scripts and tools
-│   ├── setup_database.py      # Database setup tool
-│   ├── create_world.py        # World creation tool
-│   ├── populate_monsters.py   # Monster population tool
-│   ├── create_admin_character.py # Admin character creation
-│   ├── debug_exits.py         # Debug utility for room exits
-│   └── README.md              # Tools documentation
-├── 📁 tests/                  # Test scripts
+├── admin_system.py            # Admin commands and tools
+├── character_creation.py      # Character creation system
+├── client.py                  # Game client
+├── config.yaml                # Server configuration
+├── database.py                # Database operations
+├── debug_logger.py            # Debug logging system
+├── game_engine.py             # Core game logic
+├── input_sanitizer.py         # Security and input validation
+├── run_server.py              # Server launcher
+├── server.py                  # Main game server
+├── ssh_server.py              # SSH server implementation
+├── requirements.txt           # Python dependencies
+├── README.md                  # This file
+├── LICENSE                    # Creative Commons license
+├── SECURITY_IMPROVEMENTS.md   # Security documentation
+├── Screenshot.png             # Game screenshot
+├── .gitignore                 # Git ignore rules
+├── tests/                     # Test scripts
+│   ├── README.md              # Tests documentation
+│   ├── test_codebase_health.py # Codebase health tests
 │   ├── test_combat.py         # Combat system tests
 │   ├── test_monster_system.py # Monster system tests
-│   ├── test_monsters.py       # Monster functionality tests
-│   └── README.md              # Tests documentation
-├── 📁 Configuration & Documentation
-│   ├── config.yaml            # Server configuration
-│   ├── requirements.txt       # Python dependencies
-│   ├── README.md              # This file
-│   ├── SECURITY_IMPROVEMENTS.md # Security documentation
-│   └── .gitignore             # Git ignore rules
-└── 📁 venv/                   # Virtual environment (auto-generated)
+│   └── test_monsters.py       # Monster functionality tests
+└── tools/                     # Utility scripts and tools
+    ├── README.md              # Tools documentation
+    ├── create_admin_character.py # Admin character creation
+    ├── create_world.py        # World creation tool
+    ├── debug_exits.py         # Debug utility for room exits
+    ├── populate_monsters.py   # Monster population tool
+    └── setup_database.py      # Database setup tool
 ```
 
 ## 🛠️ Installation & Setup
@@ -239,10 +239,83 @@ ssh -p 2222 username@localhost
 - `who` - List online players
 
 ### Administrative (Admin only)
-- `create_item <name> <description> <type>` - Create new item
-- `create_monster <name> <description> <level>` - Create new monster
-- `teleport <room_id>` - Teleport to room
-- `debug <command>` - Debug commands
+**Note**: All admin commands start with `/` and require admin access level (2+). Use quotes for multi-word parameters.
+
+#### World Building
+- `/create_room "name" "description"` - Create a new room
+- `/link_rooms <room1_id> <direction> <room2_id>` - Link two rooms bidirectionally
+- `/edit_room <room_id> <property> "value"` - Edit room properties (name, description, properties)
+- `/list_rooms [page]` - List all rooms with pagination
+
+#### Item Management
+- `/create_item "name" <type> [stats_json]` - Create a new item with optional stats
+- `/edit_item <item_id> <property> "value"` - Edit item properties
+- `/spawn_item <item_id>` - Spawn item in current room
+- `/list_items [page]` - List all items with pagination
+
+#### Monster Management
+- `/create_monster "name" <level> [stats]` - Create a new monster template
+- `/edit_monster <monster_id> <property> "value"` - Edit monster properties
+- `/spawn_monster <monster_id>` - Spawn monster in current room
+- `/list_monsters [page]` - List all monster templates with pagination
+
+#### Player Management
+- `/teleport <player_name> <room_id>` - Teleport a player to specific room
+- `/promote <username>` - Promote user to admin status
+- `/demote <username>` - Remove admin status from user
+- `/kick <player_name> ["reason"]` - Kick a player from the server
+- `/ban <player_name> ["reason"]` - Ban a player from the server
+- `/unban <player_name>` - Remove ban from a player
+
+#### Server Management
+- `/server_stats` - Show detailed server statistics and player info
+- `/broadcast "message"` - Send message to all connected players
+- `/reload_world` - Reload world data from database
+- `/save_world [filename]` - Save current world state to file
+- `/load_world <filename>` - Load world state from file
+
+#### Debug Management
+- `/debug_status` - Show current debug logger status and settings
+- `/debug_enable [verbosity]` - Enable debug logging (0-3 verbosity levels)
+- `/debug_disable` - Disable all debug logging
+- `/debug_verbosity <level>` - Set debug verbosity (0=minimal, 1=normal, 2=verbose, 3=very_verbose)
+- `/debug_component <component> <on|off>` - Enable/disable debug for specific components
+
+#### Inspection Tools
+- `/list_properties <type> <id>` - List all properties of a room, item, or monster
+- `/admin_help` - Show complete admin command reference
+
+#### Examples
+```bash
+# Create a magical forest room
+/create_room "Enchanted Forest" "A mystical forest where ancient magic flows through every tree"
+
+# Link rooms (Town Square ID 1 to Forest ID 5, going north)
+/link_rooms 1 north 5
+
+# Create a powerful weapon with custom stats
+/create_item "Flame Sword" weapon '{"damage": 25, "fire_damage": 10, "durability": 100}'
+
+# Create a high-level boss monster
+/create_monster "Ancient Dragon" 15
+
+# Teleport player "hero123" to the temple (room 2)
+/teleport hero123 2
+
+# Broadcast server maintenance message
+/broadcast "Server will restart in 10 minutes for updates"
+
+# Enable verbose debug logging for combat system
+/debug_component combat on
+/debug_verbosity 2
+```
+
+#### Admin Command Notes
+- **JSON Parameters**: Use single quotes around JSON objects: `'{"key": "value"}'`
+- **Quoted Strings**: Use double quotes for multi-word names: `"Magic Forest"`
+- **Access Levels**: Commands require admin access level 2 or higher
+- **Error Handling**: Invalid commands show usage help automatically
+- **Logging**: All admin actions are logged for audit purposes
 
 ## 👥 User Accounts
 
