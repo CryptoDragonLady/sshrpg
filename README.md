@@ -3,6 +3,8 @@
 # SSH RPG - Text-Based MMORPG
 A feature-rich multi-user text-based MMORPG server with SSH and TCP support, featuring character creation, enhanced turn-based combat, safe zones, customizable status lines, world exploration, and comprehensive administrative tools.
 
+![SSH RPG Screenshot](Screenshot.png)
+
 ## 🎮 Features
 
 - **Multi-user support**: Up to 24 simultaneous players
