@@ -42,7 +42,8 @@ class AdminSystem:
             'debug_enable': self._debug_enable,
             'debug_disable': self._debug_disable,
             'debug_verbosity': self._debug_verbosity,
-            'debug_component': self._debug_component
+            'debug_component': self._debug_component,
+            'map': self._show_map
         }
     
     async def process_admin_command(self, player, command: str, args: List[str]) -> bool:
@@ -1092,3 +1093,155 @@ Note: For JSON parameters, use single quotes around the JSON object.
         
         # Log admin action
         await self._log_admin_action(player, f"Set debug component '{component}' to {state_text}")
+    
+    async def _show_map(self, player, args: List[str]):
+        """Show ASCII map centered on current room: /map"""
+        current_room_id = player.character['current_room']
+        
+        # Get the current room
+        current_room = await db.get_room(current_room_id)
+        if not current_room:
+            await player.send_message("Error: Cannot find current room", "red")
+            return
+        
+        # Build a map of rooms within 3 steps from current room
+        room_map = {}
+        await self._build_room_map(current_room_id, room_map, 0, 3)
+        
+        # Generate ASCII map
+        ascii_map = await self._generate_ascii_map(current_room_id, room_map)
+        
+        await player.send_message("Map (you are at the center):", "cyan")
+        await player.send_message(ascii_map, "white")
+        
+        # Log admin action
+        await self._log_admin_action(player, f"Viewed map from room {current_room_id}")
+    
+    async def _build_room_map(self, start_room_id: int, room_map: dict, current_depth: int, max_depth: int):
+        """Recursively build a map of connected rooms"""
+        if current_depth > max_depth or start_room_id in room_map:
+            return
+        
+        room = await db.get_room(start_room_id)
+        if not room:
+            return
+        
+        # Parse exits
+        exits = {}
+        if room.get('exits'):
+            if isinstance(room['exits'], str):
+                try:
+                    exits = json.loads(room['exits'])
+                except (json.JSONDecodeError, TypeError):
+                    exits = {}
+            elif isinstance(room['exits'], dict):
+                exits = room['exits']
+        
+        room_map[start_room_id] = {
+            'name': room['name'],
+            'exits': exits
+        }
+        
+        # Recursively explore connected rooms
+        if current_depth < max_depth:
+            for direction, connected_room_id in exits.items():
+                if isinstance(connected_room_id, int):
+                    await self._build_room_map(connected_room_id, room_map, current_depth + 1, max_depth)
+    
+    async def _generate_ascii_map(self, center_room_id: int, room_map: dict):
+        """Generate ASCII map with the center room in the middle"""
+        # Create a 7x7 grid (3 rooms in each direction from center)
+        grid_size = 7
+        center = grid_size // 2  # Index 3 is the center
+        
+        # Initialize grid
+        grid = [[' ' for _ in range(grid_size)] for _ in range(grid_size)]
+        room_positions = {}
+        
+        # Place center room
+        grid[center][center] = '@'  # @ represents current room
+        room_positions[center_room_id] = (center, center)
+        
+        # Use BFS to place rooms relative to center
+        from collections import deque
+        queue = deque([(center_room_id, center, center)])
+        visited = {center_room_id}
+        
+        while queue:
+            room_id, row, col = queue.popleft()
+            
+            if room_id not in room_map:
+                continue
+            
+            room_data = room_map[room_id]
+            exits = room_data.get('exits', {})
+            
+            # Direction mappings
+            directions = {
+                'north': (-1, 0),
+                'south': (1, 0),
+                'east': (0, 1),
+                'west': (0, -1)
+            }
+            
+            for direction, connected_room_id in exits.items():
+                if direction not in directions or connected_room_id in visited:
+                    continue
+                
+                if not isinstance(connected_room_id, int):
+                    continue
+                
+                dr, dc = directions[direction]
+                new_row, new_col = row + dr, col + dc
+                
+                # Check bounds
+                if 0 <= new_row < grid_size and 0 <= new_col < grid_size:
+                    if connected_room_id in room_map:
+                        grid[new_row][new_col] = '.'  # . represents other rooms
+                        room_positions[connected_room_id] = (new_row, new_col)
+                        visited.add(connected_room_id)
+                        queue.append((connected_room_id, new_row, new_col))
+        
+        # Add connection lines
+        for room_id, (row, col) in room_positions.items():
+            if room_id not in room_map:
+                continue
+            
+            room_data = room_map[room_id]
+            exits = room_data.get('exits', {})
+            
+            # Draw connections
+            for direction, connected_room_id in exits.items():
+                if connected_room_id not in room_positions:
+                    continue
+                
+                target_row, target_col = room_positions[connected_room_id]
+                
+                # Draw connection lines
+                if direction == 'north' and row > 0:
+                    if grid[row - 1][col] == ' ':
+                        grid[row - 1][col] = '|'
+                elif direction == 'south' and row < grid_size - 1:
+                    if grid[row + 1][col] == ' ':
+                        grid[row + 1][col] = '|'
+                elif direction == 'east' and col < grid_size - 1:
+                    if grid[row][col + 1] == ' ':
+                        grid[row][col + 1] = '-'
+                elif direction == 'west' and col > 0:
+                    if grid[row][col - 1] == ' ':
+                        grid[row][col - 1] = '-'
+        
+        # Convert grid to string
+        result = []
+        for row in grid:
+            result.append(''.join(row))
+        
+        # Add legend
+        result.append("")
+        result.append("Legend:")
+        result.append("@ = Your current location")
+        result.append(". = Other rooms")
+        result.append("| = North/South connection")
+        result.append("- = East/West connection")
+        
+        return '\n'.join(result)

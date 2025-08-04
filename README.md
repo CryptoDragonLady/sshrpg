@@ -283,6 +283,7 @@ ssh -p 2222 username@localhost
 
 #### Inspection Tools
 - `/list_properties <type> <id>` - List all properties of a room, item, or monster
+- `/map` - Display ASCII map centered on current room (7x7 grid showing connections)
 - `/admin_help` - Show complete admin command reference
 
 #### Examples
