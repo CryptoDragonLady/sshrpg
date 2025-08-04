@@ -1111,8 +1111,17 @@ Note: For JSON parameters, use single quotes around the JSON object.
         # Generate ASCII map
         ascii_map = await self._generate_ascii_map(current_room_id, room_map)
         
+        # Send the map as individual lines to avoid formatting issues
+        await player.send_message("", "white")  # Empty line for spacing
         await player.send_message("Map (you are at the center):", "cyan")
-        await player.send_message(ascii_map, "white")
+        await player.send_message("", "white")  # Empty line for spacing
+        
+        # Split the map into lines and send each line separately
+        map_lines = ascii_map.split('\n')
+        for line in map_lines:
+            await player.send_message(line, "white")
+        
+        await player.send_message("", "white")  # Empty line for spacing
         
         # Log admin action
         await self._log_admin_action(player, f"Viewed map from room {current_room_id}")
@@ -1154,7 +1163,7 @@ Note: For JSON parameters, use single quotes around the JSON object.
         grid_size = 7
         center = grid_size // 2  # Index 3 is the center
         
-        # Initialize grid
+        # Initialize grid with spaces
         grid = [[' ' for _ in range(grid_size)] for _ in range(grid_size)]
         room_positions = {}
         
@@ -1202,7 +1211,7 @@ Note: For JSON parameters, use single quotes around the JSON object.
                         visited.add(connected_room_id)
                         queue.append((connected_room_id, new_row, new_col))
         
-        # Add connection lines
+        # Add connection lines between adjacent rooms
         for room_id, (row, col) in room_positions.items():
             if room_id not in room_map:
                 continue
@@ -1210,12 +1219,10 @@ Note: For JSON parameters, use single quotes around the JSON object.
             room_data = room_map[room_id]
             exits = room_data.get('exits', {})
             
-            # Draw connections
+            # Draw connections to adjacent rooms
             for direction, connected_room_id in exits.items():
                 if connected_room_id not in room_positions:
                     continue
-                
-                target_row, target_col = room_positions[connected_room_id]
                 
                 # Draw connection lines
                 if direction == 'north' and row > 0:
@@ -1231,10 +1238,12 @@ Note: For JSON parameters, use single quotes around the JSON object.
                     if grid[row][col - 1] == ' ':
                         grid[row][col - 1] = '-'
         
-        # Convert grid to string
+        # Convert grid to string with proper formatting
         result = []
         for row in grid:
-            result.append(''.join(row))
+            # Join characters and ensure consistent spacing
+            line = ''.join(row)
+            result.append(line)
         
         # Add legend
         result.append("")
