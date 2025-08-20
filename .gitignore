@@ -160,6 +160,10 @@ Thumbs.db
 config_local.yaml
 .env.local
 
+# SSH host key files
+server_host_key
+server_host_key.pub
+
 # Tools and tests directories (optional - remove if you want to track them)
 # tools/
 # tests/
