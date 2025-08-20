@@ -29,6 +29,8 @@ class GameConnection:
         self.reader: Optional[Any] = None  # For TCP connections
         self.writer: Optional[Any] = None  # For TCP connections
         self.should_disconnect = False  # Flag to signal connection should be closed
+        self.has_entered_game = False  # Flag to track if player has entered the game
+        self._just_entered_game = False
         
         # Authentication state tracking
         self.auth_state = "waiting_for_command"  # waiting_for_command, waiting_for_username, waiting_for_password
@@ -60,6 +62,10 @@ class GameConnection:
             self.ssh_process.stdout.write(colored_message + '\n')
         else:
             print(colored_message)
+    
+    async def send_prompt(self, prompt: str):
+        """Send a prompt without newline (placeholder)"""
+        pass
     
     async def get_input(self, prompt: str = "") -> str:
         """Get input from the client"""
@@ -287,7 +293,17 @@ def handle_ssh_client_with_server(game_server):
                     command = line.decode('utf-8').strip() if isinstance(line, bytes) else line.strip()
                     
                     if command:
+
                         await game_server.handle_client_input(connection, command)
+                        # Display prompt after command processing
+                        prompt = await game_server.get_player_prompt(connection)
+                        if prompt:
+                            await connection.send_prompt(prompt)
+                    else:
+                        # For empty input, still show prompt if authenticated
+                        prompt = await game_server.get_player_prompt(connection)
+                        if prompt:
+                            await connection.send_prompt(prompt)
                         
                     # Check again after processing command
                     if connection.should_disconnect:
@@ -302,11 +318,20 @@ def handle_ssh_client_with_server(game_server):
         except Exception as e:
             print(f"Error in SSH client handler: {e}")
         finally:
-            if connection:
-                try:
+            try:
+                if connection and connection.user_id:
+                    await game_server.disconnect_player(int(connection.user_id))
+            except:
+                pass
+            try:
+                if connection:
                     await connection.send_message("Connection closed.", "yellow")
-                except:
-                    pass
+            except:
+                pass
+            try:
+                process.exit(0)
+            except:
+                pass
     
     return handle_ssh_client
 
@@ -348,6 +373,15 @@ async def handle_ssh_client(process):
                 
                 if command:
                     await game_server.handle_client_input(connection, command)
+                    # Display prompt after command processing
+                    prompt = await game_server.get_player_prompt(connection)
+                    if prompt:
+                        await connection.send_prompt(prompt)
+                else:
+                    # For empty input, still show prompt if authenticated
+                    prompt = await game_server.get_player_prompt(connection)
+                    if prompt:
+                        await connection.send_prompt(prompt)
                     
                 # Check again after processing command
                 if connection.should_disconnect:
@@ -411,6 +445,14 @@ class SSHProcessConnection(GameConnection):
             
         except Exception as e:
             print(f"Error sending SSH message: {e}")
+    
+    async def send_prompt(self, prompt: str):
+        """Send a prompt without newline for bash-like behavior"""
+        try:
+            # Send prompt without newline to create proper prompt behavior
+            self.process.stdout.write(prompt)
+        except Exception as e:
+            print(f"Error sending SSH prompt: {e}")
     
     async def get_input(self, prompt: str = "") -> str:
         """Get input from SSH client"""
@@ -565,7 +607,17 @@ class SimpleSSHServer:
                 except:
                     pass
             
+            # Override send_prompt for TCP
+            async def tcp_send_prompt(prompt: str):
+                try:
+                    # Send prompt without newline for bash-like behavior
+                    writer.write(prompt.encode('utf-8'))
+                    await writer.drain()
+                except:
+                    pass
+            
             connection.send_message = tcp_send_message
+            connection.send_prompt = tcp_send_prompt
             
             # Send welcome message
             await connection.send_message("=" * 60)
@@ -595,6 +647,25 @@ class SimpleSSHServer:
                     
                     if command:
                         await self.game_server.handle_client_input(connection, command)
+                        # Send prompt after command processing, but not immediately after entering game
+                        if (not connection.password_masking and 
+                            not (hasattr(connection, 'has_entered_game') and connection.has_entered_game and 
+                                 getattr(connection, '_just_entered_game', False))):
+                            prompt = await self.game_server.get_player_prompt(connection)
+                            if prompt:
+                                await connection.send_prompt(prompt)
+                    else:
+                        # For empty input, only show prompt if authenticated and not just entering game
+                        if (not connection.password_masking and 
+                            connection.is_authenticated and 
+                            not connection.is_in_character_creation and
+                            hasattr(connection, 'has_entered_game') and connection.has_entered_game):
+                            # Clear the just entered flag after first empty input
+                            if getattr(connection, '_just_entered_game', False):
+                                connection._just_entered_game = False
+                            prompt = await self.game_server.get_player_prompt(connection)
+                            if prompt:
+                                await connection.send_prompt(prompt)
                         
                     # Check again after processing command
                     if connection.should_disconnect:

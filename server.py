@@ -366,6 +366,13 @@ class GameServer:
         await connection.send_message("Type 'help' for available commands.", "white")
         await connection.send_message("Type 'quit' to exit the game.", "white")
         await connection.send_message("")
+        
+        # Show the room after welcome messages
+        await self.game_engine._handle_look(player)
+        
+        # Mark that the player has entered the game
+        connection.has_entered_game = True
+        connection._just_entered_game = True
     
     async def _handle_game_command(self, connection, input_text: str):
         """Handle game commands from authenticated players"""
@@ -390,6 +397,27 @@ class GameServer:
         
         if not success:
             await connection.send_message("Unable to process command. Type 'help' for available commands.", "yellow")
+    
+    async def get_player_prompt(self, connection) -> Optional[str]:
+        """Get the appropriate prompt for a player if they need one"""
+        try:
+            # Only show prompts for authenticated players in game
+            if (connection.is_authenticated and 
+                not connection.is_in_character_creation and 
+                connection.user_id and 
+                self.game_engine and 
+                connection.user_id in self.game_engine.players):
+                
+                player = self.game_engine.players[connection.user_id]
+                # Get player's status line setting
+                status_line = player.character.get('status_line', '[HP: {health}/{max_health} | MP: {mana}/{max_mana} | Room: {room_name}]')
+                formatted_status = await self.game_engine._format_status_line(player, status_line)
+                return formatted_status + " > "
+            
+            return None
+        except Exception as e:
+            print(f"Error getting player prompt: {e}")
+            return None
     
     async def _disconnect_player(self, connection):
         """Disconnect a player from the game"""

@@ -484,13 +484,6 @@ class GameEngine:
             await player.send_message("You are in a void...", "red")
             return
         
-        # Show status line first
-        status_line = player.character.get('status_line', 'HP: {health}/{max_health} | MP: {mana}/{max_mana} | Room: {room_name}')
-        formatted_status = await self._format_status_line(player, status_line)
-        await player.send_message("=" * 60, "white")
-        await player.send_message(formatted_status, "cyan")
-        await player.send_message("=" * 60, "white")
-        
         # Send room name in dark yellow
         await player.send_message(f"\n{room['name']}", "dark_yellow")
         
@@ -701,7 +694,6 @@ class GameEngine:
         
         # Welcome message
         await player.send_message(f"Welcome to the world, {character_data['name']}!", "green")
-        await self._handle_look(player)
         
         return player
     
@@ -756,8 +748,7 @@ class GameEngine:
                 await player.send_message("Use what?", "yellow")
         
         elif cmd in ['look', 'l']:
-            action = Action(user_id, ActionType.LOOK, target=None, parameters={}, tick_delay=0)
-            return player.add_action(action)
+            await self._handle_look(player)
         
         elif cmd in ['say', 'speak']:
             if args:
@@ -868,7 +859,7 @@ Charisma: {char['charisma']}
         help_text = """
 Available Commands:
 - move/go <direction> (or n/s/e/w/u/d) - Move in a direction
-- look/l - Look around the current room
+its - look/l - Look around the current room
 - attack/kill/fight <target> - Attack a monster
 - use/drink/eat <item> - Use an item from inventory
 - say/speak <message> - Speak to other players in the room
@@ -1220,6 +1211,28 @@ statusline help - Show this help
             return f"Status line error: Unknown variable {e}"
         except Exception as e:
             return f"Status line error: {e}"
+    
+    async def send_status_prompt(self, player: Player):
+        """Send a bash-like prompt with status line to the player"""
+        try:
+            # Get the player's status line format
+            status_line = player.character.get('status_line', 'HP: {health}/{max_health} | MP: {mana}/{max_mana} | Room: {room_name}')
+            formatted_status = await self._format_status_line(player, status_line)
+            
+            # Send the prompt with status line (no newline at end for prompt)
+            prompt = f"[{formatted_status}] > "
+            
+            # Send without newline to create a proper prompt
+            if hasattr(player.connection, 'send_prompt'):
+                await player.connection.send_prompt(prompt)
+            else:
+                # Fallback for connections that don't support send_prompt
+                await player.send_message(prompt, "cyan")
+                
+        except Exception as e:
+            print(f"Error sending status prompt: {e}")
+            # Fallback to simple prompt
+            await player.send_message("> ", "cyan")
 
 # Global game engine instance
 game_engine = None
