@@ -13,7 +13,7 @@ For commercial licensing, please contact the project maintainer.
 import asyncio
 import sys
 import traceback
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 import signal
 
 from database import db
@@ -28,8 +28,8 @@ class GameServer:
     
     def __init__(self):
         self.db = db
-        self.game_engine = None
-        self.admin_system = None
+        self.game_engine: Optional[GameEngine] = None
+        self.admin_system: Optional[AdminSystem] = None
         self.ssh_server = None
         self.tcp_server = None
         self.running = False
@@ -150,24 +150,73 @@ class GameServer:
             traceback.print_exc()
     
     async def _handle_authentication(self, connection, input_text: str):
-        """Handle user authentication"""
-        parts = input_text.split()
+        """Handle user authentication with multi-step process"""
+        input_text = input_text.strip()
         
-        if len(parts) < 3:
-            await connection.send_message("Please use: login <username> <password> or register <username> <password>", "yellow")
+        # Handle different authentication states
+        if connection.auth_state == "waiting_for_command":
+            # Check if user typed 'register' command
+            if input_text.lower() == "register":
+                connection.auth_state = "waiting_for_username"
+                connection.auth_command = "register"
+                await connection.send_message("Username: ", "white")
+                return
+            # Otherwise treat input as username for login
+            else:
+                try:
+                    connection.username_buffer = InputSanitizer.sanitize_username(input_text)
+                    connection.auth_state = "waiting_for_password"
+                    connection.auth_command = "login"
+                    connection.password_masking = True
+                    await connection.send_message("Password: ", "white")
+                    return
+                except ValueError as e:
+                    await connection.send_message(f"Invalid username: {e}", "red")
+                    await connection.send_message("Please enter username to login, otherwise type 'register' to create a new character", "yellow")
+                    return
+        
+        elif connection.auth_state == "waiting_for_username":
+            # Store username and ask for password
+            try:
+                connection.username_buffer = InputSanitizer.sanitize_username(input_text)
+                connection.auth_state = "waiting_for_password"
+                connection.password_masking = True
+                await connection.send_message("Password: ", "white")
+                return
+            except ValueError as e:
+                await connection.send_message(f"Invalid username: {e}", "red")
+                connection.auth_state = "waiting_for_command"
+                await connection.send_message("Please enter username to login, otherwise type 'register' to create a new character", "yellow")
+                return
+        
+        elif connection.auth_state == "waiting_for_password":
+            # Process authentication with stored username and entered password
+            try:
+                username = connection.username_buffer
+                password = InputSanitizer.sanitize_string(input_text, max_length=100)
+                command = connection.auth_command
+                
+                # Reset authentication state
+                connection.auth_state = "waiting_for_command"
+                connection.username_buffer = None
+                connection.auth_command = None
+                connection.password_masking = False
+            except ValueError as e:
+                await connection.send_message(f"Invalid password: {e}", "red")
+                connection.auth_state = "waiting_for_command"
+                await connection.send_message("Please type 'login' or 'register'", "yellow")
+                return
+        
+        else:
+            # Fallback to command state
+            connection.auth_state = "waiting_for_command"
+            await connection.send_message("Please type 'login' or 'register'", "yellow")
             return
         
-        command = parts[0].lower()
-        username = parts[1]
-        password = parts[2]
-        
+        # Process the authentication command
         if command == "login":
             try:
-                # Sanitize username and password
-                clean_username = InputSanitizer.sanitize_username(username)
-                clean_password = InputSanitizer.sanitize_string(password, max_length=100)
-                
-                user = await self.db.authenticate_user(clean_username, clean_password)
+                user = await self.db.authenticate_user(username, password)
                 if user:
                     connection.user_id = user['id']
                     connection.is_authenticated = True
@@ -183,17 +232,16 @@ class GameServer:
                         await self._start_character_creation(connection)
                 else:
                     await connection.send_message("Invalid username or password.", "red")
-            except ValueError as e:
-                await connection.send_message(f"Invalid input: {e}", "red")
+                    await connection.send_message("Please type 'login' or 'register'", "yellow")
+            except Exception as e:
+                await connection.send_message(f"Authentication error: {e}", "red")
+                await connection.send_message("Please type 'login' or 'register'", "yellow")
         
         elif command == "register":
             try:
-                # Sanitize username and password
-                clean_username = InputSanitizer.sanitize_username(username)
-                clean_password = InputSanitizer.sanitize_string(password, max_length=100)
-                
-                if len(clean_username) < 3 or len(clean_password) < 6:
+                if len(username) < 3 or len(password) < 6:
                     await connection.send_message("Username must be at least 3 characters, password at least 6 characters.", "red")
+                    await connection.send_message("Please type 'login' or 'register'", "yellow")
                     return
                 
                 # Check if this is the first user (excluding the default admin)
@@ -202,21 +250,25 @@ class GameServer:
                 
                 # Create user with admin privileges if first user
                 access_level = 3 if is_first_user else 1  # 3 = admin, 1 = regular user
-                success = await self.db.create_user(clean_username, clean_password, access_level=access_level)
+                success = await self.db.create_user(username, password, access_level=access_level)
                 
                 if success:
                     if is_first_user:
-                        await connection.send_message(f"Account created successfully with ADMIN privileges! Please login with: login {clean_username} {clean_password}", "gold")
+                        await connection.send_message("Account created successfully with ADMIN privileges!", "gold")
                         await connection.send_message("You are the first player and have been granted administrator access.", "gold")
                     else:
-                        await connection.send_message(f"Account created successfully! Please login with: login {clean_username} {clean_password}", "green")
+                        await connection.send_message("Account created successfully!", "green")
+                    await connection.send_message("Please type 'login' to sign in with your new account.", "white")
                 else:
                     await connection.send_message("Username already exists. Please choose a different username.", "red")
-            except ValueError as e:
-                await connection.send_message(f"Invalid input: {e}", "red")
+                    await connection.send_message("Please type 'login' or 'register'", "yellow")
+            except Exception as e:
+                await connection.send_message(f"Registration error: {e}", "red")
+                await connection.send_message("Please type 'login' or 'register'", "yellow")
         
         else:
-            await connection.send_message("Unknown command. Use 'login' or 'register'.", "red")
+            await connection.send_message("Unknown authentication command.", "red")
+            await connection.send_message("Please type 'login' or 'register'", "yellow")
     
     async def _start_character_creation(self, connection):
         """Start character creation process"""
@@ -292,6 +344,10 @@ class GameServer:
     
     async def _enter_game(self, connection):
         """Enter the player into the game world"""
+        if not self.game_engine:
+            await connection.send_message("Game engine not available.", "red")
+            return
+            
         # Check server capacity
         if len(self.game_engine.players) >= self.max_players:
             await connection.send_message("Server is full. Please try again later.", "red")
@@ -318,15 +374,19 @@ class GameServer:
             return
         
         # Check for admin commands first
-        if self.admin_system.is_admin_command(input_text):
-            player = self.game_engine.players.get(connection.user_id)
-            if player:
-                handled = await self.admin_system.process_command(player, input_text)
-                if handled:
-                    return
+        if self.admin_system and self.admin_system.is_admin_command(input_text):
+            if self.game_engine:
+                player = self.game_engine.players.get(connection.user_id)
+                if player:
+                    handled = await self.admin_system.process_command(player, input_text)
+                    if handled:
+                        return
         
         # Process regular game command
-        success = await self.game_engine.process_command(connection.user_id, input_text)
+        if self.game_engine:
+            success = await self.game_engine.process_command(connection.user_id, input_text)
+        else:
+            success = False
         
         if not success:
             await connection.send_message("Unable to process command. Type 'help' for available commands.", "yellow")
@@ -336,9 +396,13 @@ class GameServer:
         try:
             await connection.send_message("Goodbye! Thanks for playing SSH RPG!", "cyan")
             
+            # Signal that the connection should be closed
+            connection.should_disconnect = True
+            
             if connection.user_id:
                 # Remove from game engine
-                await self.game_engine.remove_player(connection.user_id)
+                if self.game_engine:
+                    await self.game_engine.remove_player(connection.user_id)
                 
                 # Clean up session mappings
                 if connection.user_id in self.user_sessions:

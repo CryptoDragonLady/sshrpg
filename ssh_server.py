@@ -1,11 +1,13 @@
 import asyncio
 import sys
-from typing import Dict, Optional
+import os
+from typing import Dict, Optional, Union, Any
 
 try:
     import asyncssh
     SSH_AVAILABLE = True
 except ImportError:
+    asyncssh = None
     SSH_AVAILABLE = False
 from colorama import Fore, Back, Style, init
 import traceback
@@ -18,12 +20,21 @@ class GameConnection:
     
     def __init__(self, connection_type: str = "direct"):
         self.connection_type = connection_type
-        self.user_id = None
+        self.user_id: Optional[str] = None
         self.character = None
         self.is_authenticated = False
         self.is_in_character_creation = False
         self.character_creation_session = None
-        self.ssh_process = None
+        self.ssh_process: Optional[Any] = None
+        self.reader: Optional[Any] = None  # For TCP connections
+        self.writer: Optional[Any] = None  # For TCP connections
+        self.should_disconnect = False  # Flag to signal connection should be closed
+        
+        # Authentication state tracking
+        self.auth_state = "waiting_for_command"  # waiting_for_command, waiting_for_username, waiting_for_password
+        self.auth_command: Optional[str] = None  # "login" or "register"
+        self.username_buffer: Optional[str] = None
+        self.password_masking = False
         
     async def send_message(self, message: str, color: str = "white"):
         """Send a message to the client with optional color"""
@@ -59,12 +70,13 @@ class GameConnection:
         else:
             return input(prompt)
 
-class SSHGameSession(asyncssh.SSHServerSession):
+class SSHGameSession:
     """SSH session handler for game connections"""
     
     def __init__(self, game_server):
         self.game_server = game_server
-        self.connection = None
+        self.connection: Optional[GameConnection] = None
+        self.chan: Optional[Any] = None
         
     def connection_made(self, chan):
         """Called when SSH connection is established"""
@@ -78,42 +90,66 @@ class SSHGameSession(asyncssh.SSHServerSession):
         
     def data_received(self, data, datatype):
         """Handle incoming data from SSH client"""
-        if datatype == asyncssh.EXTENDED_DATA_STDERR:
+        if asyncssh and datatype == asyncssh.EXTENDED_DATA_STDERR:
+            return
+            
+        # Check if connection should be disconnected
+        if self.connection and self.connection.should_disconnect:
+            if self.chan:
+                self.chan.close()
             return
             
         try:
             text = data.decode('utf-8').strip()
             if text:
-                asyncio.create_task(self.game_server.handle_client_input(self.connection, text))
+                asyncio.create_task(self._handle_input_and_check_disconnect(text))
         except Exception as e:
             print(f"Error processing SSH data: {e}")
+    
+    async def _handle_input_and_check_disconnect(self, text):
+        """Handle input and check for disconnect flag"""
+        try:
+            await self.game_server.handle_client_input(self.connection, text)
+            
+            # Check if connection should be disconnected after processing input
+            if self.connection and self.connection.should_disconnect:
+                if self.chan:
+                    self.chan.close()
+        except Exception as e:
+            print(f"Error handling SSH input: {e}")
     
     def connection_lost(self, exc):
         """Called when SSH connection is lost"""
         if self.connection and self.connection.user_id:
-            asyncio.create_task(self.game_server.disconnect_player(self.connection.user_id))
+            try:
+                asyncio.create_task(self.game_server.disconnect_player(self.connection.user_id))
+            except:
+                pass
         print("SSH connection lost")
     
     async def _start_game_session(self):
         """Start the game session for this SSH connection"""
         try:
-            await self.connection.send_message("=" * 60, "cyan")
-            await self.connection.send_message("    Welcome to SSH RPG - Text-Based MMORPG", "gold")
-            await self.connection.send_message("=" * 60, "cyan")
-            await self.connection.send_message("")
-            
-            # Start authentication process
-            await self._handle_authentication()
+            if self.connection:
+                await self.connection.send_message("=" * 60, "cyan")
+                await self.connection.send_message("    Welcome to SSH RPG - Text-Based MMORPG", "gold")
+                await self.connection.send_message("=" * 60, "cyan")
+                await self.connection.send_message("")
+                
+                # Start authentication process
+                await self._handle_authentication()
             
         except Exception as e:
-            await self.connection.send_message(f"Error starting game session: {e}", "red")
+            if self.connection:
+                await self.connection.send_message(f"Error starting game session: {e}", "red")
             print(f"Error in SSH game session: {e}")
             traceback.print_exc()
     
     async def _handle_authentication(self):
         """Handle user authentication"""
-        await self.connection.send_message("Please login or create a new account.", "white")
-        await self.connection.send_message("Type 'login <username> <password>' or 'register <username> <password>'", "yellow")
+        if self.connection:
+            await self.connection.send_message("Please login or create a new account.", "white")
+            await self.connection.send_message("Please enter username to login, otherwise type 'register' to create a new character", "yellow")
     
     # SSH session interface methods
     def pty_requested(self, term_type, term_size, term_modes):
@@ -132,14 +168,15 @@ class SSHGameSession(asyncssh.SSHServerSession):
         """Handle subsystem request"""
         return False
     
-    def break_received(self, msec):
+    def break_received(self, msec) -> bool:
         """Handle break signal"""
-        pass
+        return True
     
     def signal_received(self, signal):
         """Handle signal"""
         if signal == 'INT':
-            self.chan.close()
+            if self.chan:
+                self.chan.close()
     
     def terminal_size_changed(self, width, height, pixwidth, pixheight):
         """Handle terminal size change"""
@@ -150,7 +187,8 @@ class SSHGameSession(asyncssh.SSHServerSession):
         """Write data to SSH client"""
         if isinstance(data, str):
             data = data.encode('utf-8')
-        self.chan.write(data)
+        if self.chan:
+            self.chan.write(data)
     
     def writelines(self, lines):
         """Write multiple lines to SSH client"""
@@ -185,7 +223,7 @@ class SSHInputStream:
         # In a real implementation, you'd need to handle the SSH input stream properly
         return ""
 
-class SSHGameServer(asyncssh.SSHServer):
+class SSHGameServer:
     """SSH server for the game"""
     
     def __init__(self, game_server):
@@ -194,26 +232,275 @@ class SSHGameServer(asyncssh.SSHServer):
     def session_requested(self):
         """Create new session for incoming SSH connection"""
         return SSHGameSession(self.game_server)
+    
+    def password_auth_supported(self):
+        """Allow password authentication"""
+        return True
+    
+    def validate_password(self, username, password):
+        """Accept any username/password for game access"""
+        return True
+    
+    def connection_requested(self, dest_host, dest_port, orig_host, orig_port):
+        """Handle connection requests - reject all"""
+        return False
+    
+    def server_requested(self, listen_host, listen_port):
+        """Handle server requests - reject all"""
+        return False
+
+def handle_ssh_client_with_server(game_server):
+    """Create SSH client handler with game_server instance"""
+    async def handle_ssh_client(process):
+        """Handle SSH client connections using process factory"""
+        connection = None
+        try:
+            # Get connection info
+            username = process.get_extra_info('username')
+            peername = process.get_extra_info('peername')
+            
+            # Create a game connection wrapper for SSH
+            connection = SSHProcessConnection(process)
+            
+            # Use the passed game_server instance instead of importing
+            
+            # Send welcome messages
+            await connection.send_message("=" * 60)
+            await connection.send_message("    Welcome to SSH RPG - Text-Based MMORPG")
+            await connection.send_message("=" * 60)
+            await connection.send_message("")
+            await connection.send_message("Please login or create a new account.")
+            await connection.send_message("Please enter username to login, otherwise type 'register' to create a new character")
+            
+            # Handle client input loop
+            while True:
+                try:
+                    # Check if connection should be disconnected
+                    if connection.should_disconnect:
+                        break
+                        
+                    # Read input from SSH process
+                    line = await process.stdin.readline()
+                    if not line:
+                        break
+                        
+                    command = line.decode('utf-8').strip() if isinstance(line, bytes) else line.strip()
+                    
+                    if command:
+                        await game_server.handle_client_input(connection, command)
+                        
+                    # Check again after processing command
+                    if connection.should_disconnect:
+                        break
+                        
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    print(f"Error handling SSH client input: {e}")
+                    break
+            
+        except Exception as e:
+            print(f"Error in SSH client handler: {e}")
+        finally:
+            if connection:
+                try:
+                    await connection.send_message("Connection closed.", "yellow")
+                except:
+                    pass
+    
+    return handle_ssh_client
+
+async def handle_ssh_client(process):
+    """Handle SSH client connections using process factory (fallback)"""
+    connection = None
+    try:
+        # Get connection info
+        username = process.get_extra_info('username')
+        peername = process.get_extra_info('peername')
+        
+        # Create a game connection wrapper for SSH
+        connection = SSHProcessConnection(process)
+        
+        # Import here to avoid circular imports
+        from server import game_server
+        
+        # Send welcome messages
+        await connection.send_message("=" * 60)
+        await connection.send_message("    Welcome to SSH RPG - Text-Based MMORPG")
+        await connection.send_message("=" * 60)
+        await connection.send_message("")
+        await connection.send_message("Please login or create a new account.")
+        await connection.send_message("Please enter username to login, otherwise type 'register' to create a new character")
+        
+        # Handle client input loop
+        while True:
+            try:
+                # Check if connection should be disconnected
+                if connection.should_disconnect:
+                    break
+                    
+                # Read input from SSH process
+                line = await process.stdin.readline()
+                if not line:
+                    break
+                    
+                command = line.decode('utf-8').strip() if isinstance(line, bytes) else line.strip()
+                
+                if command:
+                    await game_server.handle_client_input(connection, command)
+                    
+                # Check again after processing command
+                if connection.should_disconnect:
+                    break
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"Error handling SSH client input: {e}")
+                break
+        
+    except Exception as e:
+        print(f"SSH client error: {e}")
+        traceback.print_exc()
+    finally:
+        try:
+            if connection and connection.user_id:
+                from server import game_server
+                await game_server.disconnect_player(int(connection.user_id))
+        except:
+            pass
+        try:
+            process.exit(0)
+        except:
+            pass
+
+class SSHProcessConnection(GameConnection):
+    """Game connection wrapper for SSH process"""
+    
+    def __init__(self, process):
+        super().__init__("ssh")
+        self.process = process
+        self.ssh_process = process  # Set this for base class compatibility
+        self._input_buffer = ""
+    
+    async def send_message(self, message: str, color: str = "white"):
+        """Send message to SSH client"""
+        try:
+            # Apply color formatting
+            colors = {
+                "red": Fore.RED,
+                "green": Fore.GREEN,
+                "blue": Fore.BLUE,
+                "yellow": Fore.YELLOW,
+                "magenta": Fore.MAGENTA,
+                "cyan": Fore.CYAN,
+                "white": Fore.WHITE,
+                "bright_red": Fore.LIGHTRED_EX,
+                "bright_green": Fore.LIGHTGREEN_EX,
+                "bright_blue": Fore.LIGHTBLUE_EX,
+                "bright_yellow": Fore.LIGHTYELLOW_EX,
+                "bright_magenta": Fore.LIGHTMAGENTA_EX,
+                "bright_cyan": Fore.LIGHTCYAN_EX,
+                "bright_white": Fore.LIGHTWHITE_EX
+            }
+            
+            color_code = colors.get(color, Fore.WHITE)
+            formatted_message = f"{color_code}{message}{Style.RESET_ALL}\n"
+            
+            self.process.stdout.write(formatted_message)
+            
+        except Exception as e:
+            print(f"Error sending SSH message: {e}")
+    
+    async def get_input(self, prompt: str = "") -> str:
+        """Get input from SSH client"""
+        try:
+            if prompt:
+                self.process.stdout.write(prompt)
+            
+            # Read line from stdin
+            line = await self.process.stdin.readline()
+            return line.strip() if line else ""
+            
+        except Exception as e:
+            print(f"Error getting SSH input: {e}")
+            return ""
+
+# Create SSH server class with proper inheritance
+class SSHGameServerAuth:
+    """SSH server with authentication"""
+    
+    def __new__(cls):
+        if SSH_AVAILABLE and asyncssh is not None:
+            # Create a dynamic class that inherits from asyncssh.SSHServer
+            class _SSHGameServerAuth(asyncssh.SSHServer):
+                def password_auth_supported(self):
+                    """Allow password authentication"""
+                    return True
+                
+                def validate_password(self, username, password):
+                    """Accept any username/password for game access"""
+                    return True
+                
+                def connection_made(self, conn):
+                    """Called when a connection is made"""
+                    pass
+            return _SSHGameServerAuth()
+        else:
+            # Return a basic object when asyncssh is not available
+            return super().__new__(cls)
+    
+    def password_auth_supported(self):
+        """Allow password authentication"""
+        return True
+    
+    def validate_password(self, username, password):
+        """Accept any username/password for game access"""
+        return True
+    
+    def connection_made(self, conn):
+        """Called when a connection is made"""
+        pass
 
 async def start_ssh_server(game_server, host='localhost', port=2222):
     """Start the SSH server"""
-    if not SSH_AVAILABLE:
+    if not SSH_AVAILABLE or asyncssh is None:
         print("SSH support not available. Install asyncssh to enable SSH connections.")
         return None
     
     try:
-        # Generate or load host key
-        host_key = asyncssh.generate_private_key('ssh-rsa')
+        # Generate or load persistent host key
+        host_key_file = "server_host_key"
         
-        # Create and start SSH server
-        def ssh_server_factory():
-            return SSHGameServer(game_server)
+        if os.path.exists(host_key_file):
+            # Load existing host key
+            try:
+                with open(host_key_file, 'r') as f:
+                    host_key_data = f.read()
+                host_key = asyncssh.import_private_key(host_key_data)
+                print(f"Loaded existing SSH host key from {host_key_file}")
+            except Exception as e:
+                print(f"Failed to load existing host key: {e}")
+                print("Generating new host key...")
+                host_key = asyncssh.generate_private_key('ssh-rsa')
+                # Save the new key
+                with open(host_key_file, 'w') as f:
+                    f.write(host_key.export_private_key().decode())
+                print(f"New SSH host key saved to {host_key_file}")
+        else:
+            # Generate new host key and save it
+            host_key = asyncssh.generate_private_key('ssh-rsa')
+            with open(host_key_file, 'w') as f:
+                f.write(host_key.export_private_key().decode())
+            print(f"Generated and saved new SSH host key to {host_key_file}")
         
+        # Create and start SSH server using process factory
         server = await asyncssh.create_server(
-            ssh_server_factory,
+            SSHGameServerAuth,
             host=host,
             port=port,
-            server_host_keys=[host_key]
+            server_host_keys=[host_key],
+            process_factory=handle_ssh_client_with_server(game_server)
         )
         
         print(f"SSH server started on {host}:{port}")
@@ -247,6 +534,7 @@ class SimpleSSHServer:
     
     async def _handle_client(self, reader, writer):
         """Handle a new TCP client connection"""
+        connection = None
         try:
             connection = GameConnection("tcp")
             connection.reader = reader
@@ -285,18 +573,32 @@ class SimpleSSHServer:
             await connection.send_message("=" * 60)
             await connection.send_message("")
             await connection.send_message("Please login or create a new account.")
-            await connection.send_message("Type 'login <username> <password>' or 'register <username> <password>'")
+            await connection.send_message("Please enter username to login, otherwise type 'register' to create a new character")
             
-            # Handle client input
+            # Handle client input with password masking support
             while True:
                 try:
-                    data = await reader.readline()
-                    if not data:
+                    # Check if connection should be disconnected
+                    if connection.should_disconnect:
                         break
+                        
+                    if connection.password_masking:
+                        # Handle password input with masking
+                        command = await self._read_password_input(reader, writer)
+                        connection.password_masking = False  # Reset after reading
+                    else:
+                        # Normal input handling
+                        data = await reader.readline()
+                        if not data:
+                            break
+                        command = data.decode('utf-8').strip()
                     
-                    command = data.decode('utf-8').strip()
                     if command:
                         await self.game_server.handle_client_input(connection, command)
+                        
+                    # Check again after processing command
+                    if connection.should_disconnect:
+                        break
                         
                 except asyncio.CancelledError:
                     break
@@ -309,12 +611,52 @@ class SimpleSSHServer:
             traceback.print_exc()
         finally:
             try:
-                if connection.user_id:
-                    await self.game_server.disconnect_player(connection.user_id)
-                writer.close()
-                await writer.wait_closed()
+                if connection and connection.user_id:
+                    await self.game_server.disconnect_player(int(connection.user_id))
             except:
                 pass
+            try:
+                if writer:
+                    writer.close()
+                    await writer.wait_closed()
+            except:
+                pass
+    
+    async def _read_password_input(self, reader, writer):
+        """Read password input with asterisk masking"""
+        password = ""
+        while True:
+            try:
+                # Read one character at a time
+                data = await reader.read(1)
+                if not data:
+                    break
+                
+                char = data.decode('utf-8')
+                
+                # Handle different input characters
+                if char == '\r' or char == '\n':
+                    # Enter pressed, finish input
+                    writer.write(b'\n')
+                    await writer.drain()
+                    break
+                elif char == '\x7f' or char == '\x08':  # Backspace or DEL
+                    if password:
+                        password = password[:-1]
+                        # Move cursor back, write space, move back again
+                        writer.write(b'\x08 \x08')
+                        await writer.drain()
+                elif char.isprintable():
+                    password += char
+                    # Show asterisk instead of actual character
+                    writer.write(b'*')
+                    await writer.drain()
+                    
+            except Exception as e:
+                print(f"Error reading password input: {e}")
+                break
+                
+        return password
     
     async def stop(self):
         """Stop the server"""
@@ -391,7 +733,7 @@ async def test_direct_connection():
         
         # Cleanup
         if connection.user_id:
-            await game_server.disconnect_player(connection.user_id)
+            await game_server.disconnect_player(int(connection.user_id))
         await game_server.stop()
         
     except Exception as e:

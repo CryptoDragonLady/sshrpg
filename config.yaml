@@ -87,18 +87,18 @@ logging:
 
 # Debug Settings
 debug:
-  enabled: false
-  verbosity: 1  # 0=minimal, 1=normal, 2=verbose, 3=very_verbose
+  enabled: true
+  verbosity: 2  # 0=minimal, 1=normal, 2=verbose, 3=very_verbose
   components:
     admin_commands: true
-    database: false
-    game_engine: false
-    server: false
+    database: true
+    game_engine: true
+    server: true
     character_creation: false
     combat: false
   output:
     console: true
-    file: false
+    file: true
     file_path: "debug.log"
 
 # Security
