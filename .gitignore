@@ -51,6 +51,9 @@ coverage.xml
 
 # SSH server host key
 *server_host_key*
+*server_host_key
+server_host_key*
+
 .hypothesis/
 .pytest_cache/
 
