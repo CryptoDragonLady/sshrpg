@@ -8,6 +8,7 @@ try:
     import asyncpg
     ASYNCPG_AVAILABLE = True
 except ImportError:
+    asyncpg = None
     ASYNCPG_AVAILABLE = False
 
 class Database:
@@ -254,7 +255,27 @@ class Database:
             char = await conn.fetchrow(
                 'SELECT * FROM characters WHERE user_id = $1', user_id
             )
-            return dict(char) if char else None
+            if char:
+                char_dict = dict(char)
+                # Parse JSONB fields from strings to Python objects
+                if 'inventory' in char_dict:
+                    if isinstance(char_dict['inventory'], str):
+                        try:
+                            char_dict['inventory'] = json.loads(char_dict['inventory'])
+                        except (json.JSONDecodeError, TypeError):
+                            char_dict['inventory'] = []
+                    elif char_dict['inventory'] is None:
+                        char_dict['inventory'] = []
+                if 'equipment' in char_dict:
+                    if isinstance(char_dict['equipment'], str):
+                        try:
+                            char_dict['equipment'] = json.loads(char_dict['equipment'])
+                        except (json.JSONDecodeError, TypeError):
+                            char_dict['equipment'] = {}
+                    elif char_dict['equipment'] is None:
+                        char_dict['equipment'] = {}
+                return char_dict
+            return None
     
     async def update_character(self, char_id: int, updates: Dict):
         """Update character data"""
@@ -342,19 +363,19 @@ class Database:
             # Update room1 exits
             room1 = await conn.fetchrow('SELECT exits FROM rooms WHERE id = $1', room1_id)
             if room1:
-                exits = room1['exits'] or {}
-                exits[direction] = room2_id
+                exits_data = room1['exits'] if room1['exits'] is not None else {}
+                exits_data[direction] = room2_id
                 await conn.execute('UPDATE rooms SET exits = $1 WHERE id = $2', 
-                                 json.dumps(exits), room1_id)
+                                 json.dumps(exits_data), room1_id)
             
             # Update room2 exits (bidirectional)
             if direction in opposite_dirs:
                 room2 = await conn.fetchrow('SELECT exits FROM rooms WHERE id = $1', room2_id)
                 if room2:
-                    exits = room2['exits'] or {}
-                    exits[opposite_dirs[direction]] = room1_id
+                    exits_data = room2['exits'] if room2['exits'] is not None else {}
+                    exits_data[opposite_dirs[direction]] = room1_id
                     await conn.execute('UPDATE rooms SET exits = $1 WHERE id = $2', 
-                                     json.dumps(exits), room2_id)
+                                     json.dumps(exits_data), room2_id)
     
     async def get_item(self, item_id: int) -> Optional[Dict]:
         """Get item by ID"""
@@ -490,6 +511,112 @@ class Database:
             await conn.execute('''
                 DELETE FROM room_monsters WHERE id = $1
             ''', instance_id)
+    
+    async def add_item_to_room(self, room_id: int, item_id: int, hidden: bool = False) -> bool:
+        """Add an item to a room's items list"""
+        if not self.pool:
+            # Memory storage
+            if room_id in self.rooms:
+                item_data = {'item_id': item_id, 'hidden': hidden}
+                if 'items' not in self.rooms[room_id]:
+                    self.rooms[room_id]['items'] = []
+                self.rooms[room_id]['items'].append(item_data)
+                return True
+            return False
+        
+        async with self.pool.acquire() as conn:
+            # Get current items
+            room = await conn.fetchrow('SELECT items FROM rooms WHERE id = $1', room_id)
+            if not room:
+                return False
+            
+            items = room['items'] if room['items'] is not None else []
+            if isinstance(items, str):
+                try:
+                    items = json.loads(items)
+                except (json.JSONDecodeError, TypeError):
+                    items = []
+            
+            # Add new item
+            item_data = {'item_id': item_id, 'hidden': hidden}
+            items.append(item_data)
+            
+            # Update room
+            await conn.execute('UPDATE rooms SET items = $1 WHERE id = $2', 
+                             json.dumps(items), room_id)
+            return True
+    
+    async def remove_item_from_room(self, room_id: int, item_id: int) -> bool:
+        """Remove an item from a room's items list"""
+        if not self.pool:
+            # Memory storage
+            if room_id in self.rooms and 'items' in self.rooms[room_id]:
+                items = self.rooms[room_id]['items']
+                self.rooms[room_id]['items'] = [item for item in items if item.get('item_id') != item_id]
+                return True
+            return False
+        
+        async with self.pool.acquire() as conn:
+            # Get current items
+            room = await conn.fetchrow('SELECT items FROM rooms WHERE id = $1', room_id)
+            if not room:
+                return False
+            
+            items = room['items'] if room['items'] is not None else []
+            if isinstance(items, str):
+                try:
+                    items = json.loads(items)
+                except (json.JSONDecodeError, TypeError):
+                    items = []
+            
+            # Remove item
+            items = [item for item in items if item.get('item_id') != item_id]
+            
+            # Update room
+            await conn.execute('UPDATE rooms SET items = $1 WHERE id = $2', 
+                             json.dumps(items), room_id)
+            return True
+    
+    async def get_room_items(self, room_id: int) -> List[Dict]:
+        """Get all items in a room with their details"""
+        if not self.pool:
+            # Memory storage
+            if room_id in self.rooms and 'items' in self.rooms[room_id]:
+                room_items = []
+                for item_data in self.rooms[room_id]['items']:
+                    item = self.items.get(item_data['item_id'])
+                    if item:
+                        item_copy = item.copy()
+                        item_copy['hidden'] = item_data.get('hidden', False)
+                        room_items.append(item_copy)
+                return room_items
+            return []
+        
+        async with self.pool.acquire() as conn:
+            # Get room items
+            room = await conn.fetchrow('SELECT items FROM rooms WHERE id = $1', room_id)
+            if not room:
+                return []
+            
+            items = room['items'] if room['items'] is not None else []
+            if isinstance(items, str):
+                try:
+                    items = json.loads(items)
+                except (json.JSONDecodeError, TypeError):
+                    items = []
+            
+            # Get item details
+            room_items = []
+            for item_data in items:
+                item_id = item_data.get('item_id')
+                if item_id:
+                    item = await conn.fetchrow('SELECT * FROM items WHERE id = $1', item_id)
+                    if item:
+                        item_dict = dict(item)
+                        item_dict['hidden'] = item_data.get('hidden', False)
+                        room_items.append(item_dict)
+            
+            return room_items
 
 # Global database instance
 db = Database()

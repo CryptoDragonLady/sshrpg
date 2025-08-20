@@ -213,6 +213,7 @@ ssh -p 2222 username@localhost
 ### Basic Commands
 - `help` - Show available commands
 - `look` - Examine current room and display status line
+- `search` / `find` - Search for hidden items (success based on intelligence)
 - `inventory` - Check your items
 - `stats` - View character statistics
 - `quit` - Exit the game
@@ -250,7 +251,7 @@ ssh -p 2222 username@localhost
 #### Item Management
 - `/create_item "name" <type> [stats_json]` - Create a new item with optional stats
 - `/edit_item <item_id> <property> "value"` - Edit item properties
-- `/spawn_item <item_id>` - Spawn item in current room
+- `/spawn_item <item_id> [hidden]` - Spawn item in current room (optionally hidden)
 - `/list_items [page]` - List all items with pagination
 
 #### Monster Management
@@ -334,6 +335,44 @@ login <username> <password>
 - **Username**: admin
 - **Password**: admin123
 - **Access Level**: 10 (full administrative privileges)
+
+## 🎒 Room Item System
+
+The game features a comprehensive room item system that allows items to be placed in rooms and discovered by players.
+
+### Item Visibility
+- **Visible Items**: Appear in room descriptions when using the `look` command
+- **Hidden Items**: Concealed until discovered through searching
+- **Persistent State**: Once found, hidden items become permanently visible to all players
+
+### Search Mechanics
+- **Search Command**: Use `search` or `find` to look for hidden items
+- **Intelligence-Based**: Success probability depends on character intelligence
+- **Random Difficulty**: Each search has a random difficulty modifier (1-20)
+- **Success Formula**: Intelligence + random(1-20) vs. Difficulty + random(1-20)
+- **Cooldown**: No cooldown between search attempts
+
+### Admin Item Management
+- **Spawn Visible Items**: `/spawn_item <item_id>` - Places item visibly in current room
+- **Spawn Hidden Items**: `/spawn_item <item_id> hidden` - Places item as hidden in current room
+- **Room Storage**: Items stored in room's JSONB `items` field with visibility status
+- **Database Integration**: Full persistence across server restarts
+
+### Example Usage
+```bash
+# Admin creates and spawns a hidden treasure
+/create_item "Ancient Coin" misc '{"value": 100}'
+/spawn_item 15 hidden
+
+# Player searches for hidden items
+search
+# Output: "You search the area thoroughly but find nothing hidden."
+# or: "You discover a Ancient Coin hidden in the area!"
+
+# After discovery, item appears in room description
+look
+# Output includes: "Items here: Ancient Coin"
+```
 
 ## 🏗️ Development Tools
 

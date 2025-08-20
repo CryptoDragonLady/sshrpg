@@ -76,7 +76,8 @@ class Player:
         if self.connection and self.is_online:
             try:
                 await self.connection.send_message(message, color)
-            except:
+            except Exception as e:
+                print(f"DEBUG: Player {self.user_id} send_message failed: {e}, setting is_online=False")
                 self.is_online = False
 
 class GameEngine:
@@ -277,6 +278,46 @@ class GameEngine:
         
         # Show new room to player
         await self._handle_look(player)
+        
+        # Send prompt after room description for movement commands
+        await self.send_status_prompt(player)
+    
+    async def _find_target_monster(self, room_monsters: List[Dict], target_name: str) -> Optional[Dict]:
+        """Find a monster using intelligent matching"""
+        target_name_lower = target_name.lower().strip()
+        
+        # First pass: exact match (case insensitive)
+        for monster_instance in room_monsters:
+            monster = await self.db.get_monster(monster_instance['monster_id'])
+            if monster and monster['name'].lower() == target_name_lower:
+                return self._prepare_monster_instance(monster_instance, monster)
+        
+        # Second pass: partial match (case insensitive)
+        matches = []
+        for monster_instance in room_monsters:
+            monster = await self.db.get_monster(monster_instance['monster_id'])
+            if monster:
+                monster_name_lower = monster['name'].lower()
+                # Check if target is a substring of monster name or vice versa
+                if target_name_lower in monster_name_lower or any(word in monster_name_lower for word in target_name_lower.split()):
+                    matches.append(self._prepare_monster_instance(monster_instance, monster))
+        
+        if len(matches) == 1:
+            return matches[0]
+        elif len(matches) > 1:
+            # Multiple matches - return the first one but suggest alternatives
+            return matches[0]
+        
+        return None
+    
+    def _prepare_monster_instance(self, monster_instance: Dict, monster: Dict) -> Dict:
+        """Prepare monster instance with full monster data"""
+        monster_instance['name'] = monster['name']
+        monster_instance['attack'] = monster['attack']
+        monster_instance['defense'] = monster['defense']
+        monster_instance['experience_reward'] = monster['experience_reward']
+        monster_instance['loot_table'] = monster['loot_table']
+        return monster_instance
     
     async def _handle_attack(self, player: Player, target_name: str):
         """Handle player attacking a monster"""
@@ -297,23 +338,25 @@ class GameEngine:
                 await player.send_message("You cannot attack in this sacred place!", "yellow")
                 return
         
-        # Find monster instance in room
+        # Find monster instance in room using intelligent matching
         room_monsters = await self.db.get_room_monsters(room_id)
-        target_monster_instance = None
-        
-        for monster_instance in room_monsters:
-            monster = await self.db.get_monster(monster_instance['monster_id'])
-            if monster and monster['name'].lower() == target_name.lower():
-                target_monster_instance = monster_instance
-                target_monster_instance['name'] = monster['name']
-                target_monster_instance['attack'] = monster['attack']
-                target_monster_instance['defense'] = monster['defense']
-                target_monster_instance['experience_reward'] = monster['experience_reward']
-                target_monster_instance['loot_table'] = monster['loot_table']
-                break
+        target_monster_instance = await self._find_target_monster(room_monsters, target_name)
         
         if not target_monster_instance:
-            await player.send_message(f"There is no {target_name} here to attack.", "yellow")
+            # Suggest available targets if no match found
+            if room_monsters:
+                available_monsters = []
+                for monster_instance in room_monsters:
+                    monster = await self.db.get_monster(monster_instance['monster_id'])
+                    if monster:
+                        available_monsters.append(monster['name'])
+                
+                if available_monsters:
+                    await player.send_message(f"There is no '{target_name}' here to attack. Available targets: {', '.join(available_monsters)}", "yellow")
+                else:
+                    await player.send_message(f"There is no {target_name} here to attack.", "yellow")
+            else:
+                await player.send_message(f"There is no {target_name} here to attack.", "yellow")
             return
         
         # Create or update combat session
@@ -525,6 +568,56 @@ class GameEngine:
                     monster_names.append(f"{monster['name']}{health_info}")
             if monster_names:
                 await player.send_message(f"Monsters: {', '.join(monster_names)}", "red")
+        
+        # Show visible items in room
+        room_items = await self.db.get_room_items(room_id)
+        if room_items:
+            visible_items = [item for item in room_items if not item.get('hidden', False)]
+            if visible_items:
+                item_names = [item['name'] for item in visible_items]
+                await player.send_message(f"Items: {', '.join(item_names)}", "yellow")
+    
+    async def _handle_search(self, player: Player):
+        """Handle player searching for hidden items"""
+        room_id = player.character['current_room']
+        
+        # Get all items in room
+        room_items = await self.db.get_room_items(room_id)
+        hidden_items = [item for item in room_items if item.get('hidden', False)]
+        
+        if not hidden_items:
+            await player.send_message("You search the area thoroughly but find nothing hidden.", "white")
+            return
+        
+        # Calculate search success based on intellect
+        intellect = player.character.get('intelligence', 10)
+        base_chance = 0.3  # 30% base chance
+        intellect_bonus = (intellect - 10) * 0.05  # 5% per point above 10
+        search_chance = min(0.9, base_chance + intellect_bonus)  # Cap at 90%
+        
+        found_items = []
+        for item in hidden_items:
+            if random.random() < search_chance:
+                found_items.append(item)
+        
+        if found_items:
+            # Remove hidden status from found items
+            for item in found_items:
+                await self.db.remove_item_from_room(room_id, item['id'])
+                await self.db.add_item_to_room(room_id, item['id'], hidden=False)
+            
+            item_names = [item['name'] for item in found_items]
+            if len(found_items) == 1:
+                await player.send_message(f"You search carefully and discover a {item_names[0]}!", "green")
+            else:
+                await player.send_message(f"You search carefully and discover: {', '.join(item_names)}!", "green")
+            
+            # Notify other players
+            await self._broadcast_to_room(room_id, 
+                f"{player.character['name']} searches the area and finds something!", 
+                exclude_player=player.user_id)
+        else:
+            await player.send_message("You search the area but don't find anything this time.", "white")
     
     async def _handle_say(self, player: Player, message: str):
         """Handle player speaking"""
@@ -629,9 +722,15 @@ class GameEngine:
     
     async def _cleanup_players(self):
         """Remove disconnected players"""
-        disconnected = [pid for pid, player in self.players.items() if not player.is_online]
+        disconnected = []
+        for pid, player in self.players.items():
+            if not player.is_online:
+                disconnected.append(pid)
+        
         for pid in disconnected:
             del self.players[pid]
+        
+        # Cleanup completed silently
     
     async def _process_events(self):
         """Process queued game events"""
@@ -733,7 +832,7 @@ class GameEngine:
             action = Action(user_id, ActionType.MOVE, target=direction, parameters={}, tick_delay=1)
             return player.add_action(action)
         
-        elif cmd in ['attack', 'kill', 'fight']:
+        elif cmd in ['attack', 'kill', 'fight', 'a']:
             if args:
                 action = Action(user_id, ActionType.ATTACK, target=' '.join(args), parameters={}, tick_delay=2)
                 return player.add_action(action)
@@ -749,6 +848,8 @@ class GameEngine:
         
         elif cmd in ['look', 'l']:
             await self._handle_look(player)
+            # Don't send prompt here - let the main handler do it
+            return True
         
         elif cmd in ['say', 'speak']:
             if args:
@@ -768,18 +869,22 @@ class GameEngine:
         
         elif cmd in ['stats', 'status']:
             await self._show_stats(player)
+            return True
         
         elif cmd in ['inventory', 'inv']:
             await self._show_inventory(player)
+            return True
         
         elif cmd == 'who':
             await self._show_online_players(player)
+            return True
         
         elif cmd == 'help':
             if args:
                 await self._show_command_help(player, args[0])
             else:
                 await self._show_help(player)
+            return True
         
         elif cmd == 'statusline':
             if args:
@@ -801,8 +906,13 @@ class GameEngine:
             else:
                 await self._show_status_line(player)
         
+        elif cmd in ['search', 'find']:
+            await self._handle_search(player)
+            return True
+        
         else:
             await player.send_message(f"Unknown command: {cmd}. Type 'help' for available commands.", "yellow")
+            return True
         
         return True
     
@@ -867,6 +977,7 @@ its - look/l - Look around the current room
 - stats/status - View your character statistics
 - inventory/inv - View your inventory
 - who - List online players
+- search/find - Search for hidden items in the room
 - statusline [set <format>|show|help] - Customize your status display
 - help [command] - Show this help message or help for specific command
 - quit/exit - Exit the game
@@ -1075,6 +1186,20 @@ Usage: exit
 Example: exit
 Note: Your character progress is automatically saved""",
             
+            'search': """Command: search
+Aliases: find
+Description: Search for hidden items in your current room. Success depends on your intelligence stat.
+Usage: search
+Example: search
+Note: Higher intelligence increases your chance of finding hidden items""",
+            
+            'find': """Command: search
+Aliases: find
+Description: Search for hidden items in your current room. Success depends on your intelligence stat.
+Usage: find
+Example: find
+Note: Higher intelligence increases your chance of finding hidden items""",
+            
             'help': """Command: help [command]
 Description: Show general help or help for a specific command
 Usage:
@@ -1221,6 +1346,13 @@ statusline help - Show this help
             
             # Send the prompt with status line (no newline at end for prompt)
             prompt = f"[{formatted_status}] > "
+            
+            # Mark that the engine has sent a prompt to avoid duplicates
+            if hasattr(player.connection, '_prompt_sent_by_engine'):
+                player.connection._prompt_sent_by_engine = True
+            else:
+                # Add the flag if it doesn't exist
+                setattr(player.connection, '_prompt_sent_by_engine', True)
             
             # Send without newline to create a proper prompt
             if hasattr(player.connection, 'send_prompt'):

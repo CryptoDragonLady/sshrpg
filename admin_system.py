@@ -280,6 +280,9 @@ class AdminSystem:
             # Show new room to target
             await self.game_engine._handle_look(target_player)
             
+            # Send prompt after room description for teleport
+            await self.game_engine.send_status_prompt(target_player)
+            
             # Log admin action
             await self._log_admin_action(player, f"Teleported {target_name} to room {room_id}")
             
@@ -772,13 +775,15 @@ Properties: {obj_dict.get('properties', {})}"""
             await player.send_message("Monster ID must be a number.", "red")
     
     async def _spawn_item(self, player, args: List[str]):
-        """Spawn an item in current room: /spawn_item <item_id>"""
-        if len(args) != 1:
-            await player.send_message("Usage: /spawn_item <item_id>", "yellow")
+        """Spawn an item in current room: /spawn_item <item_id> [hidden]"""
+        if len(args) < 1 or len(args) > 2:
+            await player.send_message("Usage: /spawn_item <item_id> [hidden]", "yellow")
+            await player.send_message("Use 'hidden' as second parameter to make item hidden", "yellow")
             return
         
         try:
             item_id = int(args[0])
+            hidden = len(args) > 1 and args[1].lower() == 'hidden'
             
             item = await db.get_item(item_id)
             if not item:
@@ -787,11 +792,22 @@ Properties: {obj_dict.get('properties', {})}"""
             
             room_id = player.character['current_room']
             
-            # This would need to be implemented to add item to room
-            await player.send_message(f"Spawned {item['name']} in current room.", "green")
+            # Add item to room
+            success = await db.add_item_to_room(room_id, item_id, hidden)
+            if success:
+                hidden_text = " (hidden)" if hidden else ""
+                await player.send_message(f"Spawned {item['name']}{hidden_text} in current room.", "green")
+                
+                # Notify other players in room (only if not hidden)
+                if not hidden:
+                    await self.game_engine._broadcast_to_room(room_id, 
+                        f"A {item['name']} appears!", exclude_player=player.user_id)
+            else:
+                await player.send_message("Failed to spawn item in room.", "red")
+                return
             
             # Log admin action
-            await self._log_admin_action(player, f"Spawned item {item['name']} in room {room_id}")
+            await self._log_admin_action(player, f"Spawned item {item['name']} in room {room_id} (hidden: {hidden})")
             
         except ValueError:
             await player.send_message("Item ID must be a number.", "red")
