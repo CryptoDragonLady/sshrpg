@@ -255,6 +255,70 @@ class SSHGameServer:
         """Handle server requests - reject all"""
         return False
 
+async def unified_connection_handler(game_server, connection, input_reader_func, should_mask_password=False):
+    """Unified connection handler for both SSH and TCP connections"""
+    try:
+        # Send welcome messages
+        await connection.send_message("=" * 60)
+        await connection.send_message("    Welcome to SSH RPG - Text-Based MMORPG")
+        await connection.send_message("=" * 60)
+        await connection.send_message("")
+        await connection.send_message("Please login or create a new account.")
+        await connection.send_message("Please enter username to login, otherwise type 'register' to create a new character")
+        
+        # Handle client input loop with proper MUD prompt timing
+        
+        while True:
+            try:
+                # Check if connection should be disconnected
+                if connection.should_disconnect:
+                    break
+                
+                # Get prompt if player is in game and authenticated
+                # But only if the game engine hasn't already sent one recently
+                prompt = None
+                if (connection.is_authenticated and 
+                    not connection.is_in_character_creation and
+                    hasattr(connection, 'has_entered_game') and connection.has_entered_game and
+                    not getattr(connection, 'password_masking', False) and
+                    not getattr(connection, '_prompt_sent_by_engine', False)):
+                    
+                    print(f"DEBUG {connection.connection_type.upper()}: Getting prompt for player {getattr(connection, 'user_id', 'unknown')}")
+                    prompt = await game_server.get_player_prompt(connection)
+                
+                # Clear the engine prompt flag after checking
+                if hasattr(connection, '_prompt_sent_by_engine'):
+                    connection._prompt_sent_by_engine = False
+                
+                # Read input using the provided reader function with prompt
+                command = await input_reader_func(prompt)
+                if command is None:  # Connection closed
+                    break
+                    
+                # Process the command immediately after receiving it
+                if command:
+                    await game_server.handle_client_input(connection, command)
+                    
+                # Check again after processing command
+                if connection.should_disconnect:
+                    break
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"Error handling {connection.connection_type} client input: {e}")
+                break
+        
+    except Exception as e:
+        print(f"{connection.connection_type} client error: {e}")
+        traceback.print_exc()
+    finally:
+        try:
+            if connection and connection.user_id:
+                await game_server.disconnect_player(int(connection.user_id))
+        except:
+            pass
+
 def handle_ssh_client_with_server(game_server):
     """Create SSH client handler with game_server instance"""
     async def handle_ssh_client(process):
@@ -268,61 +332,24 @@ def handle_ssh_client_with_server(game_server):
             # Create a game connection wrapper for SSH
             connection = SSHProcessConnection(process)
             
-            # Use the passed game_server instance instead of importing
-            
-            # Send welcome messages
-            await connection.send_message("=" * 60)
-            await connection.send_message("    Welcome to SSH RPG - Text-Based MMORPG")
-            await connection.send_message("=" * 60)
-            await connection.send_message("")
-            await connection.send_message("Please login or create a new account.")
-            await connection.send_message("Please enter username to login, otherwise type 'register' to create a new character")
-            
-            # Handle client input loop
-            while True:
-                try:
-                    # Check if connection should be disconnected
-                    if connection.should_disconnect:
-                        break
-                        
-                    # Read input from SSH process
+            # Define SSH-specific input reader
+            async def ssh_input_reader(prompt=None):
+                # Use the connection's get_input method which handles prompts
+                if prompt:
+                    return await connection.get_input(prompt)
+                else:
                     line = await process.stdin.readline()
                     if not line:
-                        break
-                        
-                    command = line.decode('utf-8').strip() if isinstance(line, bytes) else line.strip()
-                    
-                    if command:
-
-                        await game_server.handle_client_input(connection, command)
-                        # Display prompt after command processing
-                        prompt = await game_server.get_player_prompt(connection)
-                        if prompt:
-                            await connection.send_prompt(prompt)
-                    else:
-                        # For empty input, still show prompt if authenticated
-                        prompt = await game_server.get_player_prompt(connection)
-                        if prompt:
-                            await connection.send_prompt(prompt)
-                        
-                    # Check again after processing command
-                    if connection.should_disconnect:
-                        break
-                        
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    print(f"Error handling SSH client input: {e}")
-                    break
+                        return None
+                    return line.decode('utf-8').strip() if isinstance(line, bytes) else line.strip()
+            
+            # Use unified handler
+            await unified_connection_handler(game_server, connection, ssh_input_reader)
             
         except Exception as e:
-            print(f"Error in SSH client handler: {e}")
+            print(f"SSH client error: {e}")
+            traceback.print_exc()
         finally:
-            try:
-                if connection and connection.user_id:
-                    await game_server.disconnect_player(int(connection.user_id))
-            except:
-                pass
             try:
                 if connection:
                     await connection.send_message("Connection closed.", "yellow")
@@ -373,15 +400,13 @@ async def handle_ssh_client(process):
                 
                 if command:
                     await game_server.handle_client_input(connection, command)
-                    # Display prompt after command processing
-                    prompt = await game_server.get_player_prompt(connection)
-                    if prompt:
-                        await connection.send_prompt(prompt)
-                else:
-                    # For empty input, still show prompt if authenticated
-                    prompt = await game_server.get_player_prompt(connection)
-                    if prompt:
-                        await connection.send_prompt(prompt)
+                
+                # Clear the just entered flag after any command (including empty ones)
+                if hasattr(connection, '_just_entered_game'):
+                    connection._just_entered_game = False
+                
+                # Note: Prompt sending is handled by handle_ssh_client_with_server
+                # This function is kept for compatibility but should not send prompts
                     
                 # Check again after processing command
                 if connection.should_disconnect:
@@ -451,6 +476,7 @@ class SSHProcessConnection(GameConnection):
         try:
             # Send prompt without newline to create proper prompt behavior
             self.process.stdout.write(prompt)
+            await self.process.stdout.drain()  # Ensure prompt is sent immediately
         except Exception as e:
             print(f"Error sending SSH prompt: {e}")
     
@@ -619,63 +645,26 @@ class SimpleSSHServer:
             connection.send_message = tcp_send_message
             connection.send_prompt = tcp_send_prompt
             
-            # Send welcome message
-            await connection.send_message("=" * 60)
-            await connection.send_message("    Welcome to SSH RPG - Text-Based MMORPG")
-            await connection.send_message("=" * 60)
-            await connection.send_message("")
-            await connection.send_message("Please login or create a new account.")
-            await connection.send_message("Please enter username to login, otherwise type 'register' to create a new character")
+            # Define TCP-specific input reader
+            async def tcp_input_reader(prompt=None):
+                # Send prompt if provided
+                if prompt:
+                    await connection.send_prompt(prompt)
+                
+                if connection.password_masking:
+                    # Handle password input with masking
+                    command = await self._read_password_input(reader, writer)
+                    connection.password_masking = False  # Reset after reading
+                    return command
+                else:
+                    # Normal input handling
+                    data = await reader.readline()
+                    if not data:
+                        return None
+                    return data.decode('utf-8').strip()
             
-            # Handle client input with password masking support
-            while True:
-                try:
-                    # Check if connection should be disconnected
-                    if connection.should_disconnect:
-                        break
-                        
-                    if connection.password_masking:
-                        # Handle password input with masking
-                        command = await self._read_password_input(reader, writer)
-                        connection.password_masking = False  # Reset after reading
-                    else:
-                        # Normal input handling
-                        data = await reader.readline()
-                        if not data:
-                            break
-                        command = data.decode('utf-8').strip()
-                    
-                    if command:
-                        await self.game_server.handle_client_input(connection, command)
-                        # Send prompt after command processing, but not immediately after entering game
-                        if (not connection.password_masking and 
-                            not (hasattr(connection, 'has_entered_game') and connection.has_entered_game and 
-                                 getattr(connection, '_just_entered_game', False))):
-                            prompt = await self.game_server.get_player_prompt(connection)
-                            if prompt:
-                                await connection.send_prompt(prompt)
-                    else:
-                        # For empty input, only show prompt if authenticated and not just entering game
-                        if (not connection.password_masking and 
-                            connection.is_authenticated and 
-                            not connection.is_in_character_creation and
-                            hasattr(connection, 'has_entered_game') and connection.has_entered_game):
-                            # Clear the just entered flag after first empty input
-                            if getattr(connection, '_just_entered_game', False):
-                                connection._just_entered_game = False
-                            prompt = await self.game_server.get_player_prompt(connection)
-                            if prompt:
-                                await connection.send_prompt(prompt)
-                        
-                    # Check again after processing command
-                    if connection.should_disconnect:
-                        break
-                        
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    print(f"Error handling TCP client: {e}")
-                    break
+            # Use unified handler
+            await unified_connection_handler(self.game_server, connection, tcp_input_reader)
             
         except Exception as e:
             print(f"Error in TCP client handler: {e}")

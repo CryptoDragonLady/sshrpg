@@ -373,6 +373,8 @@ class GameServer:
         # Mark that the player has entered the game
         connection.has_entered_game = True
         connection._just_entered_game = True
+        
+        # Don't send prompt here - let the connection handlers manage prompts
     
     async def _handle_game_command(self, connection, input_text: str):
         """Handle game commands from authenticated players"""

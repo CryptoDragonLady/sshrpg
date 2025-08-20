@@ -88,11 +88,11 @@ logging:
 # Debug Settings
 debug:
   enabled: true
-  verbosity: 2  # 0=minimal, 1=normal, 2=verbose, 3=very_verbose
+  verbosity: 0  # 0=minimal, 1=normal, 2=verbose, 3=very_verbose
   components:
     admin_commands: true
     database: true
-    game_engine: true
+    game_engine: false
     server: true
     character_creation: false
     combat: false
