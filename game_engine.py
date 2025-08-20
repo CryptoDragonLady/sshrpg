@@ -785,7 +785,10 @@ class GameEngine:
             await self._show_online_players(player)
         
         elif cmd == 'help':
-            await self._show_help(player)
+            if args:
+                await self._show_command_help(player, args[0])
+            else:
+                await self._show_help(player)
         
         elif cmd == 'statusline':
             if args:
@@ -866,25 +869,250 @@ Charisma: {char['charisma']}
 Available Commands:
 - move/go <direction> (or n/s/e/w/u/d) - Move in a direction
 - look/l - Look around the current room
-- attack/kill <target> - Attack a monster
+- attack/kill/fight <target> - Attack a monster
 - use/drink/eat <item> - Use an item from inventory
-- say <message> - Speak to other players in the room
+- say/speak <message> - Speak to other players in the room
 - rest/sleep - Rest to recover health
 - stats/status - View your character statistics
 - inventory/inv - View your inventory
 - who - List online players
 - statusline [set <format>|show|help] - Customize your status display
-- help - Show this help message
-- quit - Exit the game
-
-Admin Commands (if you have admin access):
-- /create_room <name> <description> - Create a new room
-- /link_rooms <room1_id> <direction> <room2_id> - Link rooms
-- /create_item <name> <type> <stats> - Create an item
-- /create_monster <name> <level> <stats> - Create a monster
+- help [command] - Show this help message or help for specific command
+- quit/exit - Exit the game
 """
+        
+        # Check if player has admin access and add admin commands section
+        try:
+            # Import here to avoid circular imports
+            from database import db
+            has_admin = False
+            
+            if not db.pool:
+                # Memory storage fallback
+                for user in db.users.values():
+                    if user.get('id') == player.user_id:
+                        has_admin = user.get('access_level', 1) >= 2
+                        break
+            else:
+                async with db.pool.acquire() as conn:
+                    user = await conn.fetchrow('SELECT * FROM users WHERE id = $1', player.user_id)
+                    if user:
+                        has_admin = user['access_level'] >= 2
+            
+            if has_admin:
+                help_text += """
+Admin Commands:
+- /admin_help [command] - Show admin help or help for specific admin command
+- /create_room "name" "description" - Create a new room
+- /link_rooms <room1_id> <direction> <room2_id> - Link rooms
+- /create_item "name" <type> [stats] - Create an item
+- /create_monster "name" <level> - Create a monster
+- /teleport <player> <room_id> - Teleport a player
+- /server_stats - Show server statistics
+- /broadcast "message" - Send message to all players
+- And many more... (use /admin_help for complete list)
+"""
+        except Exception:
+            # If there's any error checking admin status, just show regular help
+            pass
+        
         await player.send_message(help_text, "white")
-    
+
+    async def _show_command_help(self, player: Player, command: str):
+        """Show help for a specific command"""
+        command = command.lower()
+        
+        # Define help text for each command
+        command_help = {
+            'move': """Command: move/go <direction>
+Aliases: n, s, e, w, u, d, north, south, east, west, up, down
+Description: Move your character in the specified direction
+Usage:
+  move north
+  go east
+  n (shortcut for north)
+  s (shortcut for south)
+Example: move north""",
+            
+            'go': """Command: move/go <direction>
+Aliases: n, s, e, w, u, d, north, south, east, west, up, down
+Description: Move your character in the specified direction
+Usage:
+  move north
+  go east
+  n (shortcut for north)
+  s (shortcut for south)
+Example: go west""",
+            
+            'look': """Command: look
+Aliases: l
+Description: Examine your current surroundings, showing room description, exits, items, monsters, and other players
+Usage: look
+Example: look""",
+            
+            'l': """Command: look
+Aliases: l
+Description: Examine your current surroundings, showing room description, exits, items, monsters, and other players
+Usage: look
+Example: l""",
+            
+            'attack': """Command: attack <target>
+Aliases: kill
+Description: Attack a monster in your current room. Cannot be used in safe zones.
+Usage: attack <monster_name>
+Example: attack goblin
+Note: Combat is turn-based and you cannot flee immediately after attacking""",
+            
+            'kill': """Command: attack <target>
+Aliases: kill, fight
+Description: Attack a monster in your current room. Cannot be used in safe zones.
+Usage: kill <monster_name>
+Example: kill orc
+Note: Combat is turn-based and you cannot flee immediately after attacking""",
+            
+            'fight': """Command: attack <target>
+Aliases: kill, fight
+Description: Attack a monster in your current room. Cannot be used in safe zones.
+Usage: fight <monster_name>
+Example: fight goblin
+Note: Combat is turn-based and you cannot flee immediately after attacking""",
+            
+            'use': """Command: use <item>
+Aliases: drink, eat
+Description: Use, drink, or eat an item from your inventory
+Usage: use <item_name>
+Examples:
+  use health potion
+  drink mana potion
+  eat bread
+Note: Items must be in your inventory to use them""",
+            
+            'drink': """Command: use <item>
+Aliases: drink, eat
+Description: Use, drink, or eat an item from your inventory
+Usage: drink <item_name>
+Example: drink health potion
+Note: Items must be in your inventory to use them""",
+            
+            'eat': """Command: use <item>
+Aliases: drink, eat
+Description: Use, drink, or eat an item from your inventory
+Usage: eat <item_name>
+Example: eat bread
+Note: Items must be in your inventory to use them""",
+            
+            'say': """Command: say <message>
+Aliases: speak
+Description: Speak to other players in your current room
+Usage: say <message>
+Example: say Hello everyone!
+Note: Only players in the same room will see your message""",
+            
+            'speak': """Command: say <message>
+Aliases: speak
+Description: Speak to other players in your current room
+Usage: speak <message>
+Example: speak How is everyone doing?
+Note: Only players in the same room will see your message""",
+            
+            'rest': """Command: rest
+Aliases: sleep
+Description: Rest to recover health and mana over time
+Usage: rest
+Example: rest
+Note: Resting takes several game ticks to complete and you cannot perform other actions while resting""",
+            
+            'sleep': """Command: rest
+Aliases: sleep
+Description: Rest to recover health and mana over time
+Usage: sleep
+Example: sleep
+Note: Resting takes several game ticks to complete and you cannot perform other actions while resting""",
+            
+            'stats': """Command: stats
+Aliases: status
+Description: Display your character's statistics including level, experience, health, mana, and attributes
+Usage: stats
+Example: stats""",
+            
+            'status': """Command: stats
+Aliases: status
+Description: Display your character's statistics including level, experience, health, mana, and attributes
+Usage: status
+Example: status""",
+            
+            'inventory': """Command: inventory
+Aliases: inv
+Description: Display all items in your inventory
+Usage: inventory
+Example: inventory""",
+            
+            'inv': """Command: inventory
+Aliases: inv
+Description: Display all items in your inventory
+Usage: inv
+Example: inv""",
+            
+            'who': """Command: who
+Description: Display a list of all players currently online
+Usage: who
+Example: who""",
+            
+            'statusline': """Command: statusline [set <format>|show|help]
+Description: Customize your status display with variables
+Usage:
+  statusline - Show current status line
+  statusline show - Display current status line
+  statusline set <format> - Set custom status line format
+  statusline help - Show formatting help and available variables
+Examples:
+  statusline set HP: {health}/{max_health} | MP: {mana}/{max_mana}
+  statusline set {name} (Lv.{level}) | {room_name}
+Note: Use 'statusline help' for available variables""",
+            
+            'quit': """Command: quit
+Aliases: exit
+Description: Exit the game and disconnect from the server
+Usage: quit
+Example: quit
+Note: Your character progress is automatically saved""",
+            
+            'exit': """Command: quit
+Aliases: exit
+Description: Exit the game and disconnect from the server
+Usage: exit
+Example: exit
+Note: Your character progress is automatically saved""",
+            
+            'help': """Command: help [command]
+Description: Show general help or help for a specific command
+Usage:
+  help - Show general help
+  help <command> - Show help for specific command
+Examples:
+  help
+  help attack
+  help statusline"""
+        }
+        
+        # Check for direction shortcuts
+        direction_shortcuts = {
+            'n': 'move', 'north': 'move',
+            's': 'move', 'south': 'move', 
+            'e': 'move', 'east': 'move',
+            'w': 'move', 'west': 'move',
+            'u': 'move', 'up': 'move',
+            'd': 'move', 'down': 'move'
+        }
+        
+        if command in direction_shortcuts:
+            command = direction_shortcuts[command]
+        
+        if command in command_help:
+            await player.send_message(command_help[command], "cyan")
+        else:
+            await player.send_message(f"No help available for command '{command}'. Type 'help' for a list of available commands.", "yellow")
+
     async def _set_status_line(self, player: Player, status_line: str):
         """Set the player's custom status line"""
         # Update character in database

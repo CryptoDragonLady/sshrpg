@@ -856,6 +856,10 @@ Uptime: {current_tick / tick_rate / 60:.1f} minutes
     
     async def _show_admin_help(self, player, args: List[str]):
         """Show admin command help"""
+        if args:
+            await self._show_admin_command_help(player, args[0])
+            return
+            
         help_text = """
 Admin Commands:
 Note: Use quotes for multi-word parameters, e.g., /create_room "Magic Forest" "A mystical forest"
@@ -913,7 +917,216 @@ Examples:
 Note: For JSON parameters, use single quotes around the JSON object.
 """
         await player.send_message(help_text, "white")
-    
+
+    async def _show_admin_command_help(self, player, command: str):
+        """Show help for a specific admin command"""
+        command = command.lower()
+        
+        # Define help text for each admin command
+        admin_command_help = {
+            'admin_help': """Command: /admin_help [command]
+Description: Show admin command help or help for a specific admin command
+Usage:
+  /admin_help - Show all admin commands
+  /admin_help <command> - Show help for specific admin command
+Examples:
+  /admin_help
+  /admin_help create_room
+  /admin_help teleport""",
+            
+            'create_room': """Command: /create_room "name" "description"
+Description: Create a new room in the game world
+Usage: /create_room "room_name" "room_description"
+Example: /create_room "Magic Forest" "A mystical forest filled with ancient trees"
+Note: Use quotes for multi-word names and descriptions""",
+            
+            'link_rooms': """Command: /link_rooms <room1_id> <direction> <room2_id>
+Description: Create bidirectional links between two rooms
+Usage: /link_rooms <room1_id> <direction> <room2_id>
+Directions: north, south, east, west, up, down, northeast, northwest, southeast, southwest
+Example: /link_rooms 1 north 5
+Note: Creates exits in both directions automatically""",
+            
+            'create_item': """Command: /create_item "name" <type> [stats_json]
+Description: Create a new item with optional custom statistics
+Usage: /create_item "item_name" <type> [stats_json]
+Types: weapon, armor, consumable, misc
+Example: /create_item "Fire Sword" weapon '{"damage": 25, "fire_damage": 10}'
+Note: Use single quotes around JSON objects""",
+            
+            'create_monster': """Command: /create_monster "name" <level> [stats]
+Description: Create a new monster template
+Usage: /create_monster "monster_name" <level>
+Example: /create_monster "Fire Dragon" 15
+Note: Higher level monsters are automatically stronger""",
+            
+            'teleport': """Command: /teleport <player_name> <room_id>
+Description: Teleport a player to a specific room
+Usage: /teleport <player_name> <room_id>
+Example: /teleport hero123 5
+Note: Player must be online to teleport""",
+            
+            'promote': """Command: /promote <username>
+Description: Promote a user to admin status (access level 2)
+Usage: /promote <username>
+Example: /promote newadmin
+Note: Requires higher admin access level""",
+            
+            'demote': """Command: /demote <username>
+Description: Remove admin status from a user (set access level to 1)
+Usage: /demote <username>
+Example: /demote oldadmin
+Note: Cannot demote users with higher access level than yourself""",
+            
+            'kick': """Command: /kick <player_name> ["reason"]
+Description: Kick a player from the server
+Usage: /kick <player_name> ["reason"]
+Example: /kick troublemaker "Inappropriate behavior"
+Note: Player can reconnect immediately""",
+            
+            'ban': """Command: /ban <player_name> ["reason"]
+Description: Ban a player from the server
+Usage: /ban <player_name> ["reason"]
+Example: /ban cheater "Using exploits"
+Note: Player cannot reconnect until unbanned""",
+            
+            'unban': """Command: /unban <player_name>
+Description: Remove ban from a player
+Usage: /unban <player_name>
+Example: /unban reformed_player
+Note: Player can reconnect after unbanning""",
+            
+            'reload_world': """Command: /reload_world
+Description: Reload world data from the database
+Usage: /reload_world
+Example: /reload_world
+Note: Updates rooms, items, and monsters from database""",
+            
+            'list_rooms': """Command: /list_rooms [page]
+Description: List all rooms with pagination
+Usage: /list_rooms [page_number]
+Example: /list_rooms 2
+Note: Shows 10 rooms per page""",
+            
+            'list_items': """Command: /list_items [page]
+Description: List all items with pagination
+Usage: /list_items [page_number]
+Example: /list_items 1
+Note: Shows 10 items per page""",
+            
+            'list_monsters': """Command: /list_monsters [page]
+Description: List all monsters with pagination
+Usage: /list_monsters [page_number]
+Example: /list_monsters 3
+Note: Shows 10 monsters per page""",
+            
+            'list_properties': """Command: /list_properties <type> <id>
+Description: List all properties of a room, item, or monster
+Usage: /list_properties <type> <id>
+Types: room, item, monster
+Example: /list_properties room 1
+Note: Shows detailed information about the specified object""",
+            
+            'edit_room': """Command: /edit_room <room_id> <property> "value"
+Description: Edit properties of an existing room
+Usage: /edit_room <room_id> <property> "new_value"
+Properties: name, description, properties
+Example: /edit_room 1 name "New Room Name"
+Note: Use quotes for multi-word values""",
+            
+            'edit_item': """Command: /edit_item <item_id> <property> "value"
+Description: Edit properties of an existing item
+Usage: /edit_item <item_id> <property> "new_value"
+Properties: name, description, item_type, properties, stats
+Example: /edit_item 5 name "Enhanced Sword"
+Note: Use quotes for multi-word values""",
+            
+            'edit_monster': """Command: /edit_monster <monster_id> <property> "value"
+Description: Edit properties of an existing monster
+Usage: /edit_monster <monster_id> <property> "new_value"
+Properties: name, description, level, health, damage, experience_reward
+Example: /edit_monster 3 level 20
+Note: Use quotes for multi-word values""",
+            
+            'spawn_monster': """Command: /spawn_monster <monster_id>
+Description: Spawn a monster in your current room
+Usage: /spawn_monster <monster_id>
+Example: /spawn_monster 7
+Note: Creates a live instance of the monster template""",
+            
+            'spawn_item': """Command: /spawn_item <item_id>
+Description: Spawn an item in your current room
+Usage: /spawn_item <item_id>
+Example: /spawn_item 12
+Note: Creates a copy of the item in the room""",
+            
+            'server_stats': """Command: /server_stats
+Description: Display server statistics and performance information
+Usage: /server_stats
+Example: /server_stats
+Note: Shows player count, uptime, and system resources""",
+            
+            'broadcast': """Command: /broadcast "message"
+Description: Send a message to all online players
+Usage: /broadcast "message"
+Example: /broadcast "Server will restart in 10 minutes"
+Note: Message appears to all players regardless of location""",
+            
+            'save_world': """Command: /save_world [filename]
+Description: Save current world state to a file
+Usage: /save_world [filename]
+Example: /save_world backup_2024
+Note: Saves rooms, items, monsters, and player data""",
+            
+            'load_world': """Command: /load_world <filename>
+Description: Load world state from a file
+Usage: /load_world <filename>
+Example: /load_world backup_2024
+Note: Replaces current world data with saved data""",
+            
+            'debug_status': """Command: /debug_status
+Description: Show current debug logging status
+Usage: /debug_status
+Example: /debug_status
+Note: Displays enabled components and verbosity level""",
+            
+            'debug_enable': """Command: /debug_enable [verbosity]
+Description: Enable debug logging with optional verbosity level
+Usage: /debug_enable [0-3]
+Example: /debug_enable 2
+Note: Higher verbosity shows more detailed information""",
+            
+            'debug_disable': """Command: /debug_disable
+Description: Disable debug logging
+Usage: /debug_disable
+Example: /debug_disable
+Note: Stops all debug output""",
+            
+            'debug_verbosity': """Command: /debug_verbosity <level>
+Description: Set debug logging verbosity level
+Usage: /debug_verbosity <0-3>
+Example: /debug_verbosity 1
+Note: 0=minimal, 1=normal, 2=verbose, 3=very verbose""",
+            
+            'debug_component': """Command: /debug_component <component> <on|off>
+Description: Enable or disable debug logging for specific components
+Usage: /debug_component <component> <on|off>
+Components: database, game_engine, server, admin_commands
+Example: /debug_component combat on
+Note: Allows fine-grained control of debug output""",
+            
+            'map': """Command: /map
+Description: Display ASCII map centered on your current room
+Usage: /map
+Example: /map
+Note: Shows 7x7 grid with room connections and IDs"""
+        }
+        
+        if command in admin_command_help:
+            await player.send_message(admin_command_help[command], "cyan")
+        else:
+            await player.send_message(f"No help available for admin command '{command}'. Type '/admin_help' for a list of available admin commands.", "yellow")
+
     async def _log_admin_action(self, player, action: str):
         """Log an admin action"""
         log_entry = f"[ADMIN] {player.character['name']}: {action}"
@@ -988,7 +1201,7 @@ Note: For JSON parameters, use single quotes around the JSON object.
             await self.process_admin_command(player, command, args)
             return True
         elif command == 'admin_help':
-            await self._show_admin_help(player, [])
+            await self._show_admin_help(player, args)
             return True
         
         return False
