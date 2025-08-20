@@ -48,6 +48,9 @@ nosetests.xml
 coverage.xml
 *.cover
 *.py,cover
+
+# SSH server host key
+server_host_key
 .hypothesis/
 .pytest_cache/
 
